@@ -71,10 +71,13 @@ bool TryRead8(std::uint32_t addr, std::uint8_t& value) noexcept {
 // One pane in isolation. The walk descends from a pane whose ancestors are already known visible,
 // so checking each pane on the way down and pruning its subtree is equivalent to the game's own
 // walk-up test, at a fraction of the reads.
-bool IsPaneSelfVisible(std::uint32_t pane) noexcept {
+bool IsPaneSelfVisible(std::uint32_t pane, bool requireOpaque) noexcept {
     std::uint8_t flags = 0;
     if (!TryRead8(pane + kPaneFlags, flags) || (flags & kPaneFlagVisible) == 0) {
         return false;
+    }
+    if (!requireOpaque) {
+        return true;
     }
     std::uint8_t alpha = 0;
     if (!TryRead8(pane + kPaneAlpha, alpha) || alpha == 0) {
@@ -84,13 +87,13 @@ bool IsPaneSelfVisible(std::uint32_t pane) noexcept {
 }
 
 // The control's own layout root can still be hidden by something above it.
-bool AreAncestorsVisible(std::uint32_t pane) noexcept {
+bool AreAncestorsVisible(std::uint32_t pane, bool requireOpaque) noexcept {
     std::uint32_t parent = 0;
     if (!Memory::TryRead32(pane + kPaneParent, parent)) {
         return true;
     }
     for (std::size_t depth = 0; parent != 0 && depth < kMaxDepth; ++depth) {
-        if (!IsPaneSelfVisible(parent)) {
+        if (!IsPaneSelfVisible(parent, requireOpaque)) {
             return false;
         }
         if (!Memory::TryRead32(parent + kPaneParent, parent)) {
@@ -120,12 +123,12 @@ void NoteTextBoxInstance(std::uint32_t textBox) {
     }
 }
 
-std::string ReadControlText(std::uint32_t control) noexcept {
+std::string ReadControlText(std::uint32_t control, bool requireOpaque) noexcept {
     std::uint32_t root = 0;
     if (control == 0 || !Memory::TryRead32(control + kControlRootPane, root) || root == 0) {
         return {};
     }
-    if (!IsPaneSelfVisible(root) || !AreAncestorsVisible(root)) {
+    if (!IsPaneSelfVisible(root, requireOpaque) || !AreAncestorsVisible(root, requireOpaque)) {
         return {};
     }
 
@@ -139,7 +142,7 @@ std::string ReadControlText(std::uint32_t control) noexcept {
         stack.pop_back();
         ++visited;
 
-        const bool selfVisible = IsPaneSelfVisible(pane);
+        const bool selfVisible = IsPaneSelfVisible(pane, requireOpaque);
 
 
         // Hidden panes keep their untranslated placeholder text, so reading one means speaking

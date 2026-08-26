@@ -16,8 +16,12 @@ void NoteTextBoxInstance(std::uint32_t textBox);
 //
 // This reads the final state rather than intercepting whatever produced it, so it works for text
 // baked into the .brlyt, text pushed from BMG, and text composed by Text::PaneHandler alike.
+// `requireOpaque` false skips the alpha test, for a page read just after Page::Activate: the
+// entrance animation has not run yet, so everything is still fully transparent and an alpha test
+// would report the whole screen as hidden.
+//
 // Returns an empty string if the control has no layout yet or nothing readable. Never throws.
-std::string ReadControlText(std::uint32_t control) noexcept;
+std::string ReadControlText(std::uint32_t control, bool requireOpaque = true) noexcept;
 
 }  // namespace a11y::ui
 

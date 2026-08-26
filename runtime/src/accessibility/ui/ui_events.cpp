@@ -6,6 +6,7 @@
 #include "accessibility/a11y_log.h"
 #include "accessibility/screen_reader.h"
 #include "lyt_walk.h"
+#include "page_reader.h"
 #include "text_capture.h"
 
 namespace a11y::ui {
@@ -65,6 +66,7 @@ void OnPageActivated(std::uint32_t page) {
     if (page != g_currentPage) {
         g_lastSpoken.clear();
     }
+    QueuePageForReading(page);
 }
 
 void OnSectionEntered(std::uint32_t section) {
