@@ -1,6 +1,7 @@
 #include "ui_events.h"
 
 #include "accessibility/a11y_log.h"
+#include "screen_watcher.h"
 #include "text_capture.h"
 
 namespace a11y::ui {
@@ -22,9 +23,11 @@ void OnPageActivated(std::uint32_t page) {
 }
 
 void OnSectionEntered(std::uint32_t section) {
-    // Pages and their panes are rebuilt from scratch, so the captured text is about to describe
-    // objects that no longer exist.
+    // Pages, controls and panes are rebuilt from scratch, so both the captured text and the
+    // watcher's snapshot are about to describe objects that no longer exist - at addresses the
+    // guest is free to hand to something else.
     ClearCapturedText();
+    ResetScreenWatcher();
     RT_LOGF(RT_TAG_A11Y, "section %08x entered\n", section);
 }
 

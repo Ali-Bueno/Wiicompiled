@@ -50,11 +50,6 @@ std::unordered_set<std::uint32_t>& TextBoxVtables() {
     return vtables;
 }
 
-std::unordered_set<std::uint32_t>& PushButtonVtables() {
-    static std::unordered_set<std::uint32_t> vtables;
-    return vtables;
-}
-
 bool TryRead16(std::uint32_t addr, std::uint16_t& value) noexcept {
     try {
         value = Memory::Read16(addr);
@@ -126,24 +121,6 @@ void NoteTextBoxInstance(std::uint32_t textBox) {
     if (TextBoxVtables().insert(vtable).second) {
         RT_LOGF(RT_TAG_A11Y, "learned TextBox vtable %08x\n", vtable);
     }
-}
-
-void NotePushButtonInstance(std::uint32_t control) {
-    std::uint32_t vtable = 0;
-    if (control == 0 || !Memory::TryRead32(control, vtable) || vtable == 0) {
-        return;
-    }
-    if (PushButtonVtables().insert(vtable).second) {
-        RT_LOGF(RT_TAG_A11Y, "learned button class %08x\n", vtable);
-    }
-}
-
-bool IsKnownPushButton(std::uint32_t control) noexcept {
-    std::uint32_t vtable = 0;
-    if (!Memory::TryRead32(control, vtable) || vtable == 0) {
-        return false;
-    }
-    return PushButtonVtables().count(vtable) != 0;
 }
 
 std::string ReadControlText(std::uint32_t control, bool requireOpaque) noexcept {

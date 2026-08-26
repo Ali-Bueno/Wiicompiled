@@ -12,9 +12,18 @@ namespace a11y::ui {
 // section knows which page is on top and when it has settled, and the page's manipulator knows
 // which control has the cursor, whatever kind of control it is.
 //
-// Entering a screen speaks a dialog's message, if it has one, then the focused item. Moving the
-// cursor speaks the focused item. A menu's title is deliberately not spoken.
+// What gets read is decided the same way: a control the cursor can reach is an item, and everything
+// else on the page is text the screen is showing. No list of known classes, so a screen built out of
+// widgets nobody has seen before still reads.
+//
+// Entering a screen speaks its text, then the focused item, then whatever describes that item.
+// Moving the cursor speaks the item and whichever labels moved with it.
 void TickScreenWatcher();
+
+// Drops the per-page state. Called when the section changes, because pages and controls are rebuilt
+// from scratch and the guest reuses their addresses - a snapshot kept across that would silence a
+// new screen that happened to land where the old one was.
+void ResetScreenWatcher();
 
 }  // namespace a11y::ui
 

@@ -1,6 +1,8 @@
 #include "screen_watcher.h"
 
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "accessibility/a11y_log.h"
@@ -8,6 +10,7 @@
 #include "focus.h"
 #include "lyt_walk.h"
 #include "memory.h"
+#include "page_controls.h"
 
 namespace a11y::ui {
 namespace {
@@ -29,49 +32,42 @@ constexpr std::uint32_t kMaxLayers = 16;
 constexpr std::uint32_t kPageState = 0x08;
 constexpr std::uint32_t kPageStateActive = 4;
 
-// A page's own ControlGroup (Page::InitControlGroup, func_8060245C) and a control's nested one
-// (UIControl::InitControlGroup, func_8063D268). A grid like character select builds its thirty
-// buttons in its own group, not the page's, which is why a page-only walk finds nothing there.
-constexpr std::uint32_t kPageControlGroup = 0x24;
-constexpr std::uint32_t kControlChildGroup = 104;
-constexpr std::uint32_t kControlGroupArray = 0x00;
-constexpr std::uint32_t kControlGroupCount = 0x10;
+// Label classes whose text follows the cursor: a tooltip, or the name a grid paints outside its
+// buttons. Learned from behaviour - a label seen changing while the cursor moved belongs to the
+// item - and used only to order the arrival announcement, so a class nobody has seen before is
+// announced as part of the screen rather than going unread. Never a hardcoded vtable; the same
+// approach as the TextBox classes in lyt_walk.cpp.
+std::unordered_set<std::uint32_t>& ItemBoundClasses() {
+    static std::unordered_set<std::uint32_t> classes;
+    return classes;
+}
 
-// Real groups hold single digits to low tens of controls; this only guards a half-built one.
-constexpr std::uint32_t kMaxControlsPerGroup = 128;
-constexpr std::size_t kMaxControlsVisited = 512;
+std::uint32_t ClassOf(std::uint32_t control) noexcept {
+    std::uint32_t vtable = 0;
+    return Memory::TryRead32(control, vtable) ? vtable : 0;
+}
 
-// The message-window control classes, by vtable: MessageWindowControl (ctor func_805F9700),
-// MessageWindowControlScaleFade (func_805F9820) and SimpleMessageWindowControl (func_805F9900).
-// Recognising these is what tells a dialog from a menu without guessing from screen names or layer
-// bookkeeping: a dialog has a message window, a menu does not.
-constexpr std::uint32_t kMessageWindowVtables[] = {0x808B9EE0, 0x808B9EA4, 0x808B9E68};
+bool IsItemBound(std::uint32_t control) noexcept {
+    const std::uint32_t klass = ClassOf(control);
+    return klass != 0 && ItemBoundClasses().count(klass) != 0;
+}
 
-// Text-only control classes, by vtable. Their constructors are inlined into the page constructors,
-// so these were recovered from the relocated vtables in StaticR - the same method that reproduces
-// the message-window values above exactly.
-//
-// The screen's own heading: CtrlMenuPageTitleText, CtrlMenuPressStart (the title screen's "Press
-// the A Button") and the CtrlMenuObi banners. Said once, on arrival.
-constexpr std::uint32_t kTitleVtables[] = {0x808D36D4, 0x808D3798, 0x808D365C, 0x808D3620};
-
-// CtrlMenuInstructionText is not part of the heading: it describes the option under the cursor and
-// changes as the cursor moves. It belongs to the item, which is why the spec orders an item as name,
-// then state, then description - reading it with the title mixed a tooltip into the screen name.
-constexpr std::uint32_t kTooltipVtables[] = {0x808D3698};
-
-// What each control was showing when the cursor last moved. Some screens - character and kart
-// selection - keep the name of the highlighted item in a control of their own rather than in the
-// button, so the focused button reads as empty and the name simply changes somewhere else on the
-// page. Diffing catches that without knowing which screen is which.
-std::unordered_map<std::uint32_t, std::string> g_controlTextSnapshot;
-std::uint32_t g_lastFocused = 0;
+void LearnItemBound(std::uint32_t control) {
+    const std::uint32_t klass = ClassOf(control);
+    if (klass != 0 && ItemBoundClasses().insert(klass).second) {
+        RT_LOGF(RT_TAG_A11Y, "label class %08x follows the cursor\n", klass);
+    }
+}
 
 std::uint32_t g_announcedPage = 0;
+std::uint32_t g_lastFocused = 0;
 // The focused item as last spoken, tracked apart from the whole announcement. Comparing the focus
 // against the full sentence made every screen announcement immediately followed by the focused item
 // on its own, which cut the message off mid-word.
-std::string g_spokenFocusText;
+std::string g_spokenFocusText = {};
+// What each label was showing when the cursor last moved, so a label that follows the cursor can be
+// told from one that just sits there.
+std::unordered_map<std::uint32_t, std::string> g_labelText;
 
 std::uint32_t TopPage() noexcept {
     std::uint32_t manager = 0;
@@ -91,111 +87,188 @@ std::uint32_t TopPage() noexcept {
     return page;
 }
 
-bool HasVtableIn(std::uint32_t control, const std::uint32_t* known, std::size_t count) noexcept {
-    std::uint32_t vtable = 0;
-    if (!Memory::TryRead32(control, vtable) || vtable == 0) {
-        return false;
-    }
-    for (std::size_t i = 0; i < count; ++i) {
-        if (vtable == known[i]) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool IsMessageWindow(std::uint32_t control) noexcept {
-    return HasVtableIn(control, kMessageWindowVtables, std::size(kMessageWindowVtables));
-}
-
-bool IsTitle(std::uint32_t control) noexcept {
-    return HasVtableIn(control, kTitleVtables, std::size(kTitleVtables));
-}
-
-bool IsTooltip(std::uint32_t control) noexcept {
-    return HasVtableIn(control, kTooltipVtables, std::size(kTooltipVtables));
-}
-
-void CollectGroup(std::uint32_t group, std::vector<std::uint32_t>& out) noexcept {
-    std::uint32_t count = 0;
-    std::uint32_t array = 0;
-    if (!Memory::TryRead32(group + kControlGroupCount, count) || count == 0 ||
-        count > kMaxControlsPerGroup || !Memory::TryRead32(group + kControlGroupArray, array) ||
-        array == 0) {
-        return;
-    }
-    for (std::uint32_t i = 0; i < count && out.size() < kMaxControlsVisited; ++i) {
-        std::uint32_t control = 0;
-        if (Memory::TryRead32(array + i * sizeof(std::uint32_t), control) && control != 0) {
-            out.push_back(control);
-        }
-    }
-}
-
-// Every control on the page, including those a container built in its own group.
-std::vector<std::uint32_t> PageControls(std::uint32_t page) noexcept {
+// The screen's text, by exclusion: every control the cursor cannot reach. That is the whole
+// classification, and it needs to know nothing about control classes - which is the point. A text
+// class nobody has seen before is a label because the cursor cannot reach it, not because it was on
+// a list, so it reads instead of going mute.
+struct PageLabels {
     std::vector<std::uint32_t> controls;
-    CollectGroup(page + kPageControlGroup, controls);
-    for (std::size_t i = 0; i < controls.size() && controls.size() < kMaxControlsVisited; ++i) {
-        CollectGroup(controls[i] + kControlChildGroup, controls);
-    }
-    return controls;
-}
+    bool trustworthy = false;
+    bool anySelectable = false;
+};
 
-void Append(std::string& into, const std::string& text) {
-    if (text.empty() || into.find(text) != std::string::npos) {
-        return;
-    }
-    if (!into.empty()) {
-        into += ". ";
-    }
-    into += text;
-}
+PageLabels ReadLabels(std::uint32_t page, std::uint32_t focused) noexcept {
+    PageLabels labels;
+    const std::vector<std::uint32_t> selectable = SelectableControls(page);
+    labels.anySelectable = !selectable.empty();
 
-// What the screen calls itself, plus a dialog's message. Said once, on arrival.
-std::string ReadScreenTitle(std::uint32_t page) noexcept {
-    std::string result;
+    // A page with a focused control necessarily has selectable ones. If none came back, the
+    // manipulator list did not read, and calling every button a label would recite whole menus -
+    // the one thing the spec forbids outright. Announce only the focused item instead.
+    labels.trustworthy = labels.anySelectable || focused == 0;
+    if (!labels.trustworthy) {
+        return labels;
+    }
+
+    std::unordered_set<std::uint32_t> reachable(selectable.begin(), selectable.end());
+    if (focused != 0) {
+        reachable.insert(focused);  // it resolved, so it is reachable whatever the list said
+    }
     for (const std::uint32_t control : PageControls(page)) {
-        if (IsTitle(control) || IsMessageWindow(control)) {
-            Append(result, ReadControlText(control));
+        if (reachable.count(control) == 0) {
+            labels.controls.push_back(control);
         }
     }
-    return result;
+    return labels;
 }
 
-// The description of whatever the cursor is on. Said with the item, every time it moves.
-std::string ReadTooltip(std::uint32_t page) noexcept {
-    std::string result;
-    for (const std::uint32_t control : PageControls(page)) {
-        if (IsTooltip(control)) {
-            Append(result, ReadControlText(control));
-        }
-    }
-    return result;
-}
-
-// Refreshes the snapshot and returns whatever text on the page is new since it was last taken.
+// One sentence out of the parts a screen contributed, in the order they were gathered.
 //
-// This is what makes character and kart selection speak. Their buttons hold an id, not a name: the
-// page paints the highlighted item's name into a control of its own. So the focused button reads as
-// empty while a label elsewhere changes, and the change is the announcement.
-std::string RefreshSnapshotAndCollectChanges(std::uint32_t page, bool reportChanges) noexcept {
-    std::string changed;
-    for (const std::uint32_t control : PageControls(page)) {
-        const std::string text = ReadControlText(control);
+// A part already contained in another is dropped, whichever way round they arrived. Screens hand
+// out the same string more than once - a button carries shadow and highlight copies of its label,
+// and a heading is often repeated by a smaller pane beside it - and now that every label is read
+// rather than a chosen few, the shorter one turning up first is routine.
+std::string Join(const std::vector<std::string>& parts) {
+    std::string result;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (parts[i].empty()) {
+            continue;
+        }
+        bool covered = false;
+        for (std::size_t j = 0; j < parts.size() && !covered; ++j) {
+            if (i == j || parts[j].find(parts[i]) == std::string::npos) {
+                continue;
+            }
+            // Identical parts cover each other; keeping the first is what makes that terminate.
+            covered = parts[j].size() > parts[i].size() || j < i;
+        }
+        if (covered) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += ". ";
+        }
+        result += parts[i];
+    }
+    return result;
+}
+
+// Arriving on a screen.
+//
+// A screen with a cursor announces the item under it, and nothing else. Reciting the whole page is
+// what the spec forbids by name, and reading every label was doing exactly that - the main menu
+// listed all four of its buttons before saying which one was selected. The full label set is still
+// snapshot, because the next cursor move needs something to diff against.
+//
+// A screen with nothing selectable at all - the strap warning, the title screen's "press A" - is the
+// one case that does read everything, because there is no navigation to follow and silence would
+// look like a freeze.
+//
+// The test is whether the page has selectable controls, NOT whether one is focused right now. On the
+// frame a page settles the manipulator often has not picked its initial control yet, and reading
+// "no focus" as "nothing to select" made every return to the main menu recite its four buttons.
+// Saying nothing here is safe: focus resolves a frame later and the cursor path announces it.
+void AnnounceScreen(std::uint32_t page, std::uint32_t focused, const std::string& focusedText) {
+    g_announcedPage = page;
+    g_lastFocused = focused;
+    g_spokenFocusText = focusedText;
+    g_labelText.clear();
+
+    const PageLabels labels = ReadLabels(page, focused);
+    std::vector<std::string> screenParts;
+    std::vector<std::string> itemParts;
+    for (const std::uint32_t label : labels.controls) {
+        const std::string text = ReadControlText(label);
+        g_labelText[label] = text;  // seeded even when empty, so the first change reads as one
         if (text.empty()) {
             continue;
         }
-        auto& stored = g_controlTextSnapshot[control];
-        if (reportChanges && stored != text) {
-            Append(changed, text);
-        }
-        stored = text;
+        (IsItemBound(label) ? itemParts : screenParts).push_back(text);
     }
-    return changed;
+
+    std::vector<std::string> parts;
+    if (!labels.anySelectable) {
+        parts = std::move(screenParts);
+    } else {
+        parts.push_back(focusedText);
+        parts.insert(parts.end(), itemParts.begin(), itemParts.end());
+    }
+
+    const std::string announcement = Join(parts);
+    if (announcement.empty()) {
+        RT_LOGF(RT_TAG_A11Y, "page %08x settled with nothing readable\n", page);
+        return;
+    }
+    ScreenReader::Instance().Speak(announcement, /*interrupt=*/true);
+}
+
+// Moving the cursor: the item, plus whichever labels moved with it. A button that names itself is
+// the common case; when it does not - character and kart selection - the screen keeps the name of
+// the highlighted item in a label of its own, and that label is what just changed.
+void AnnounceItem(std::uint32_t page, std::uint32_t focused, const std::string& focusedText) {
+    g_lastFocused = focused;
+    g_spokenFocusText = focusedText;
+
+    std::vector<std::string> parts{focusedText};
+    for (const std::uint32_t label : ReadLabels(page, focused).controls) {
+        const std::string text = ReadControlText(label);
+        const auto known = g_labelText.find(label);
+        const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;
+        g_labelText[label] = text;
+        if (!changed || text.empty()) {
+            continue;  // a label going blank is a screen tidying up, not something to say
+        }
+        LearnItemBound(label);
+        parts.push_back(text);
+    }
+
+    const std::string announcement = Join(parts);
+    if (!announcement.empty()) {
+        ScreenReader::Instance().Speak(announcement, /*interrupt=*/true);
+    }
+}
+
+// The cursor has not moved, so anything that changed is a value the player just edited - left and
+// right on an up/down control, which repaints a label beside it rather than the control itself.
+//
+// Only the new value is spoken: the spec draws the line between entering an item, which gets the
+// full context, and changing one, which gets the change alone. Repeating the label - "Difficulty:
+// Hard" - is called out as wrong by name.
+//
+// It does interrupt, which is a deliberate departure from the spec's "incremental information does
+// not interrupt". Scrubbing through values is faster than speech, so queueing left the reader a
+// value or two behind the cursor - the player heard the option they had already passed. See
+// docs/menu-accessibility.md section 2.
+//
+// Nothing is learned from this. A label that changes while the cursor sits still belongs to the
+// control the cursor is on, not to whichever item is focused, so treating it as item-bound would
+// misorder every later arrival announcement.
+void AnnounceValueChange(std::uint32_t page, std::uint32_t focused) {
+    std::vector<std::string> parts;
+    for (const std::uint32_t label : ReadLabels(page, focused).controls) {
+        const std::string text = ReadControlText(label);
+        const auto known = g_labelText.find(label);
+        const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;
+        g_labelText[label] = text;
+        if (changed && !text.empty()) {
+            parts.push_back(text);
+        }
+    }
+
+    const std::string announcement = Join(parts);
+    if (!announcement.empty()) {
+        ScreenReader::Instance().Speak(announcement, /*interrupt=*/true);
+    }
 }
 
 }  // namespace
+
+void ResetScreenWatcher() {
+    g_announcedPage = 0;
+    g_lastFocused = 0;
+    g_spokenFocusText.clear();
+    g_labelText.clear();
+}
 
 void TickScreenWatcher() {
     const std::uint32_t page = TopPage();
@@ -211,41 +284,14 @@ void TickScreenWatcher() {
     const std::string focusedText = focused != 0 ? ReadControlText(focused) : std::string{};
 
     if (page != g_announcedPage) {
-        g_announcedPage = page;
-        g_lastFocused = focused;
-        g_controlTextSnapshot.clear();
-        RefreshSnapshotAndCollectChanges(page, /*reportChanges=*/false);
-
-        std::string announcement = ReadScreenTitle(page);
-        Append(announcement, focusedText);
-        Append(announcement, ReadTooltip(page));
-        // Remember the focused item, not the whole sentence. Comparing the focus against the full
-        // announcement made the next frame say the item again on its own, cutting the message off
-        // mid-word - which is what "the OK interrupted the warning" was.
-        g_spokenFocusText = focusedText;
-        if (announcement.empty()) {
-            RT_LOGF(RT_TAG_A11Y, "page %08x settled with nothing readable\n", page);
-            return;
-        }
-        ScreenReader::Instance().Speak(announcement, /*interrupt=*/true);
+        AnnounceScreen(page, focused, focusedText);
         return;
     }
-
-    if (focused == g_lastFocused && focusedText == g_spokenFocusText) {
+    if (focused != g_lastFocused || focusedText != g_spokenFocusText) {
+        AnnounceItem(page, focused, focusedText);
         return;
     }
-    g_lastFocused = focused;
-    g_spokenFocusText = focusedText;
-
-    // A button that names itself is the common case. When it does not, the screen keeps the name of
-    // the highlighted item elsewhere, and what changed on the page is the answer.
-    const std::string changed =
-        RefreshSnapshotAndCollectChanges(page, /*reportChanges=*/focusedText.empty());
-    std::string announcement = focusedText.empty() ? changed : focusedText;
-    Append(announcement, ReadTooltip(page));
-    if (!announcement.empty()) {
-        ScreenReader::Instance().Speak(announcement, /*interrupt=*/true);
-    }
+    AnnounceValueChange(page, focused);
 }
 
 }  // namespace a11y::ui
