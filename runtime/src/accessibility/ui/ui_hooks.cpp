@@ -81,9 +81,14 @@ extern "C" void MkwPageEndEntrance_Observe_806029f4(CpuContext* ctx) {
 extern "C" void MkwPageActivate_Observe_80601aec(CpuContext* ctx) {
     const std::uint32_t page = ctx->gpr[3];
 
-    func_80601AEC(ctx);
-
+    // Notified BEFORE the original, unlike every other hook here. Activate runs the page's
+    // OnActivate, which is where a page gives its initial control focus - so the selection happens
+    // *inside* this call. Registering the page afterwards would wipe the record of that selection
+    // and leave the reader thinking nothing took focus, which made it recite whole menus, and it
+    // would let a dialog's button speak before the message it belongs to.
     a11y::ui::OnPageActivated(page);
+
+    func_80601AEC(ctx);
 }
 
 extern "C" void MkwSectionMgrEnterSection_Observe_80635080(CpuContext* ctx) {

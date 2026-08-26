@@ -11,6 +11,12 @@ namespace a11y::ui {
 // is taken from the running game, which is what PRINCIPLES.md section 4 asks for.
 void NoteTextBoxInstance(std::uint32_t textBox);
 
+// Same trick for controls: a control seen taking focus is a button, so its class is remembered.
+// Anything never seen taking focus is a label - a screen title or a dialog's message - which is
+// exactly the text the focus path can never announce.
+void NotePushButtonInstance(std::uint32_t control);
+bool IsKnownPushButton(std::uint32_t control) noexcept;
+
 // Returns the text a menu control is currently showing, by walking its layout's pane tree and
 // reading the string buffer of every TextBox under it.
 //

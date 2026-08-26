@@ -3,7 +3,7 @@
 #include "prism_runtime.h"
 #include "accessibility/a11y_log.h"
 #include "screen_reader.h"
-#include "ui/page_reader.h"
+#include "ui/screen_watcher.h"
 
 namespace a11y {
 namespace {
@@ -37,9 +37,9 @@ void Tick() {
         ScreenReader::Instance().Speak("Mario Kart Wii accessibility ready.");
     }
 
-    // Screens with no selectable control are announced from here, a couple of frames after the
-    // page activates - Page::Activate itself runs before the entrance animation.
-    ui::TickPageReader();
+    // Everything the menus say is decided here: the watcher reads what is on screen and speaks
+    // whatever changed since last frame.
+    ui::TickScreenWatcher();
 }
 
 void Shutdown() {

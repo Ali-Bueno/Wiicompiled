@@ -1,78 +1,42 @@
 #include "ui_events.h"
 
-#include <chrono>
-#include <string>
-
 #include "accessibility/a11y_log.h"
-#include "accessibility/screen_reader.h"
 #include "lyt_walk.h"
-#include "page_reader.h"
+#include "screen_watcher.h"
 #include "text_capture.h"
 
 namespace a11y::ui {
-namespace {
-
-// The playbook's announcer contract specifies a dedup window on an identical message. The Wii
-// Remote pointer also fires select/deselect in bursts as it sweeps across buttons, and this is what
-// keeps that from stuttering.
-constexpr auto kDedupWindow = std::chrono::milliseconds(200);
-
-using Clock = std::chrono::steady_clock;
-
-std::string g_lastSpoken;
-Clock::time_point g_lastSpokenAt{};
-
-// The page currently readable. Zero until a page finishes its entrance animation.
-std::uint32_t g_currentPage = 0;
-
-void Announce(const std::string& text, bool interrupt) {
-    if (text.empty()) {
-        return;
-    }
-    const auto now = Clock::now();
-    if (text == g_lastSpoken && (now - g_lastSpokenAt) < kDedupWindow) {
-        return;
-    }
-    g_lastSpoken = text;
-    g_lastSpokenAt = now;
-    ScreenReader::Instance().Speak(text, interrupt);
-}
-
-}  // namespace
 
 void OnControlSelected(std::uint32_t control, bool initial) {
-    // Read what the control is showing right now rather than trusting anything we saw it being
-    // told earlier: the localized string is written by a path that does not pass through
-    // TextBox::SetString, so the events lag the screen by a whole localisation step.
+    // Learned first, and unconditionally. A page gives its initial focus while it is still fading
+    // in, so the control has no readable text yet - returning early on that would mean never
+    // learning that it is a button, and the screen announcement would then recite every button on
+    // the page as if it were a title.
+    NotePushButtonInstance(control);
+
     const std::string text = ReadControlText(control);
     if (text.empty()) {
-        RT_LOGF(RT_TAG_A11Y, "selected control %08x: no readable text\n", control);
         return;
     }
-    // Both cases interrupt: an initial selection is part of a screen change, and moving the cursor
-    // makes the previous item irrelevant.
-    Announce(text, /*interrupt=*/true);
+    // Recorded, never spoken from here. What gets said and when is decided once per frame by the
+    // screen watcher, so a selection that happens while a new screen is still animating in lands in
+    // that screen's announcement instead of racing ahead of it.
+    NoteFocusedControl(control, text);
     (void)initial;
 }
 
 void OnPageEntered(std::uint32_t page) {
-    g_currentPage = page;
-    RT_LOGF(RT_TAG_A11Y, "page %08x ready\n", page);
+    (void)page;
 }
 
 void OnPageActivated(std::uint32_t page) {
-    // Activate fires before the entrance animation, so nothing is readable yet. Clearing here is
-    // what makes a re-entered page announce again instead of being diff-gated into silence.
-    if (page != g_currentPage) {
-        g_lastSpoken.clear();
-    }
-    QueuePageForReading(page);
+    (void)page;
 }
 
 void OnSectionEntered(std::uint32_t section) {
+    // Pages and their panes are rebuilt from scratch, so the captured text is about to describe
+    // objects that no longer exist.
     ClearCapturedText();
-    g_lastSpoken.clear();
-    g_currentPage = 0;
     RT_LOGF(RT_TAG_A11Y, "section %08x entered\n", section);
 }
 
