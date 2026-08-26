@@ -5,7 +5,7 @@
 #include <cwchar>
 #include <string>
 
-#include "runtime_log.h"
+#include "accessibility/a11y_log.h"
 
 namespace a11y {
 namespace {

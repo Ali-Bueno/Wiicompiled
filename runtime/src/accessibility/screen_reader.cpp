@@ -1,7 +1,7 @@
 #include "screen_reader.h"
 
 #include "prism_runtime.h"
-#include "runtime_log.h"
+#include "accessibility/a11y_log.h"
 
 namespace a11y {
 

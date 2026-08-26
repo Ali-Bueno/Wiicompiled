@@ -14,8 +14,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#define RT_TAG_A11Y "accessibility"
-
 namespace a11y {
 
 // Only the entry points the mod actually uses.
