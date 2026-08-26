@@ -1,27 +1,19 @@
 #ifndef MKW_ACCESSIBILITY_UI_SCREEN_WATCHER_H
 #define MKW_ACCESSIBILITY_UI_SCREEN_WATCHER_H
 
-#include <cstdint>
-#include <string>
-
 namespace a11y::ui {
 
 // Watches what the game is showing and speaks the difference, once per frame.
 //
-// This deliberately replaces an earlier event-driven design. Reacting to Page::Activate meant
-// guessing when the page's initial focus lands, when the entrance animation ends, and which of
-// several pages activating in one frame is the real one - and every guess that fixed one screen
-// broke another. The game already answers all of it: the section knows which page is on top, and
-// the page knows when it has settled. Reading that each frame and diffing needs no ordering
-// assumptions at all.
+// Nothing here is event-driven, on purpose. Reacting to Page::Activate meant guessing when a
+// page's initial focus lands and when its entrance animation ends, and every guess that fixed one
+// screen broke another; and listening for PushButton selection events only ever covered plain
+// buttons, leaving character, kart and Mii selection silent. The game already answers both: the
+// section knows which page is on top and when it has settled, and the page's manipulator knows
+// which control has the cursor, whatever kind of control it is.
 //
-// On a new screen it speaks the non-button text - the title, a dialog's message - followed by the
-// focused item. On the same screen it speaks the focused item whenever it changes.
-
-// From the selection hooks. Records only; the frame tick decides what is spoken and when.
-void NoteFocusedControl(std::uint32_t control, std::string text);
-
-// From the per-frame tick.
+// Entering a screen speaks a dialog's message, if it has one, then the focused item. Moving the
+// cursor speaks the focused item. A menu's title is deliberately not spoken.
 void TickScreenWatcher();
 
 }  // namespace a11y::ui

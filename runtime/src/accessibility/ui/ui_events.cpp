@@ -1,27 +1,15 @@
 #include "ui_events.h"
 
 #include "accessibility/a11y_log.h"
-#include "lyt_walk.h"
-#include "screen_watcher.h"
 #include "text_capture.h"
 
 namespace a11y::ui {
 
+// The selection hooks are left registered but inert: focus is read from the page's manipulator each
+// frame instead, which covers every control type rather than plain buttons alone. Removing the
+// registrations would force a full retranslation for no gain.
 void OnControlSelected(std::uint32_t control, bool initial) {
-    // Learned first, and unconditionally. A page gives its initial focus while it is still fading
-    // in, so the control has no readable text yet - returning early on that would mean never
-    // learning that it is a button, and the screen announcement would then recite every button on
-    // the page as if it were a title.
-    NotePushButtonInstance(control);
-
-    const std::string text = ReadControlText(control);
-    if (text.empty()) {
-        return;
-    }
-    // Recorded, never spoken from here. What gets said and when is decided once per frame by the
-    // screen watcher, so a selection that happens while a new screen is still animating in lands in
-    // that screen's announcement instead of racing ahead of it.
-    NoteFocusedControl(control, text);
+    (void)control;
     (void)initial;
 }
 
