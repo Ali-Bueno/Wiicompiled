@@ -1,6 +1,7 @@
 // gx_copy.cpp - Framebuffer Copy Operations
 #include "gx_internal.h"
 
+#include "accessibility/accessibility.h"
 #include "settings_overlay.h"
 
 #include <dolphin/gx/GXAurora.h>
@@ -126,6 +127,7 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
     aurora_wait_for_frame_worker();
     settings_overlay::Draw();
+    a11y::Tick();
     // Seal, pace to the VI retrace boundary (Aurora renders the sealed frame
     // during the wait), and pre-warm the next frame.
     VI_HLE_PresentFrame(/*presentedXfb=*/true, /*paceToRetrace=*/true);

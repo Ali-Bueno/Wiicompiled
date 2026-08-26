@@ -41,6 +41,7 @@
 #endif
 
 #include "abi_bridge.h"
+#include "accessibility/accessibility.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
 #include "memory.h"
@@ -1255,6 +1256,7 @@ int RuntimeMain(int argc, char** argv) {
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
+        a11y::Init();
         RT_LOG(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
                   << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)
                   << " resolutionMultiplier=" << resolutionMultiplier
