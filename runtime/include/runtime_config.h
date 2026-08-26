@@ -50,6 +50,10 @@ struct RuntimeUserConfig {
     std::optional<bool> audioMixWorker;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     std::optional<bool> networkEnabled;
+    // Wii system language (SYSCONF IPL.LNG). Supplied to the game by the SCGetLanguage stub in
+    // runtime/src/hle/sc_language.cpp, because the managed NAND never seeds a SYSCONF for the SDK
+    // to read.
+    std::optional<int32_t> systemLanguage;
     std::optional<std::string> nandRoot;
     std::optional<std::string> dvdRoot;
     // The one canonical Retro Rewind installation, owned and updated by the frontend. Setup records
@@ -63,6 +67,12 @@ struct RuntimeUserConfig {
 };
 
 namespace RuntimeConfigFile {
+
+// Bounds of the Wii SYSCONF IPL.LNG enumeration. English is the default because it is present on
+// every retail region of the disc.
+inline constexpr int32_t kSystemLanguageMin = 0;
+inline constexpr int32_t kSystemLanguageMax = 9;
+inline constexpr int32_t kSystemLanguageDefault = 1;
 
 inline constexpr const char* kConfigFileName = "Config.toml";
 inline constexpr const char* kApplicationDirectoryName = "WiiCompiled";
@@ -247,6 +257,13 @@ inline void EnsureConfigFile() {
               "mix_worker = true\n\n"
               "[network]\n"
               "enabled = true\n\n"
+              "[system]\n"
+              "# Wii system language, as SYSCONF stores it in IPL.LNG.\n"
+              "# 0 Japanese, 1 English, 2 German, 3 French, 4 Spanish, 5 Italian,\n"
+              "# 6 Dutch, 7 Simplified Chinese, 8 Traditional Chinese, 9 Korean.\n"
+              "# A PAL disc carries English, French, German, Spanish and Italian.\n"
+              "# Takes effect on the next launch: the game reads it once while booting.\n"
+              "language = 1\n\n"
               "[paths]\n"
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
@@ -379,6 +396,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
+    if (const auto language = FindConfigInt(document, "system", "language");
+        language && *language >= kSystemLanguageMin && *language <= kSystemLanguageMax) {
+        config.systemLanguage = *language;
+    }
 
     config.nandRoot = FindConfigValue<std::string>(document, "paths", "nand_root");
     config.dvdRoot = FindConfigValue<std::string>(document, "paths", "dvd_root");
@@ -701,6 +722,22 @@ inline bool AttenuateMusicWhenMediaPlays(bool fallback = false) {
 
 inline uint32_t FrameInterpolationFps(uint32_t fallback = 0) {
     return Get().frameInterpolationFps.value_or(fallback);
+}
+
+// SC_LANG_* / SYSCONF IPL.LNG: 0 JP, 1 EN, 2 DE, 3 FR, 4 ES, 5 IT, 6 NL, 7 SCH, 8 TCH, 9 KO.
+// A PAL disc carries EN, FR, DE, ES and IT; asking for anything else falls back inside the game.
+inline int32_t SystemLanguage(int32_t fallback = kSystemLanguageDefault) {
+    return std::clamp(Get().systemLanguage.value_or(fallback), kSystemLanguageMin,
+                      kSystemLanguageMax);
+}
+
+inline bool SetSystemLanguage(int32_t value) {
+    if (value < kSystemLanguageMin || value > kSystemLanguageMax) {
+        return false;
+    }
+    Mutable().systemLanguage = value;
+    // The game reads the language once while booting, so this only takes effect on the next launch.
+    return WriteSetting("system", "language", std::to_string(value));
 }
 
 inline bool SkipUnreadyPipelines(bool fallback = true) {
