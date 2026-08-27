@@ -244,8 +244,19 @@ void AnnounceItem(std::uint32_t page, std::uint32_t focused, const std::string& 
 // control the cursor is on, not to whichever item is focused, so treating it as item-bound would
 // misorder every later arrival announcement.
 void AnnounceValueChange(std::uint32_t page, std::uint32_t focused) {
+    const PageLabels labels = ReadLabels(page, focused);
+
+    // A page the cursor cannot reach at all was already read once on arrival, and nothing on it is
+    // a value the player is scrubbing through. The race HUD is exactly that page, and re-diffing it
+    // every frame turned the lap counter, position and timer into speech that interrupted itself
+    // several times a second. It also skips the per-frame pane walk over every HUD element, which
+    // with nothing selectable is the most expensive case there is.
+    if (!labels.anySelectable) {
+        return;
+    }
+
     std::vector<std::string> parts;
-    for (const std::uint32_t label : ReadLabels(page, focused).controls) {
+    for (const std::uint32_t label : labels.controls) {
         const std::string text = ReadControlText(label);
         const auto known = g_labelText.find(label);
         const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;

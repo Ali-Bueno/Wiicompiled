@@ -47,6 +47,12 @@ struct RuntimeUserConfig {
     std::optional<float> audioUiVolume;
     std::optional<float> audioVoicesVolume;
     std::optional<bool> audioMuted;
+    std::optional<bool> accessibilityInvertSteeringPan;
+    std::optional<bool> accessibilityEdgeCues;
+    std::optional<int32_t> accessibilitySteeringStrength;
+    std::optional<int32_t> accessibilitySteeringSensitivity;
+    std::optional<int32_t> accessibilitySteeringLookAhead;
+    std::optional<std::string> accessibilityLineSource;
     std::optional<bool> audioMixWorker;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     std::optional<bool> networkEnabled;
@@ -73,6 +79,8 @@ namespace RuntimeConfigFile {
 inline constexpr int32_t kSystemLanguageMin = 0;
 inline constexpr int32_t kSystemLanguageMax = 9;
 inline constexpr int32_t kSystemLanguageDefault = 1;
+// SYSCONF IPL.LNG value for Spanish, named for the accessibility speech that keys off it.
+inline constexpr int32_t kSystemLanguageSpanish = 4;
 
 inline constexpr const char* kConfigFileName = "Config.toml";
 inline constexpr const char* kApplicationDirectoryName = "WiiCompiled";
@@ -392,6 +400,18 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.audioUiVolume = readVolume("ui_volume");
     config.audioVoicesVolume = readVolume("voices_volume");
     config.audioMuted = FindConfigValue<bool>(document, "audio", "muted");
+    config.accessibilityInvertSteeringPan =
+        FindConfigValue<bool>(document, "accessibility", "invert_steering_pan");
+    config.accessibilityEdgeCues =
+        FindConfigValue<bool>(document, "accessibility", "edge_cues");
+    config.accessibilitySteeringStrength =
+        FindConfigInt(document, "accessibility", "steering_strength");
+    config.accessibilitySteeringSensitivity =
+        FindConfigInt(document, "accessibility", "steering_sensitivity");
+    config.accessibilitySteeringLookAhead =
+        FindConfigInt(document, "accessibility", "steering_look_ahead");
+    config.accessibilityLineSource =
+        FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
@@ -652,6 +672,29 @@ inline bool SetAudioMuted(bool value) {
     return WriteSetting("audio", "muted", value ? "true" : "false");
 }
 
+inline bool SetAccessibilityInvertSteeringPan(bool value) {
+    Mutable().accessibilityInvertSteeringPan = value;
+    return WriteSetting("accessibility", "invert_steering_pan", value ? "true" : "false");
+}
+
+inline bool SetAccessibilitySteeringStrength(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringStrength = clamped;
+    return WriteSetting("accessibility", "steering_strength", std::to_string(clamped));
+}
+
+inline bool SetAccessibilitySteeringSensitivity(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringSensitivity = clamped;
+    return WriteSetting("accessibility", "steering_sensitivity", std::to_string(clamped));
+}
+
+inline bool SetAccessibilitySteeringLookAhead(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringLookAhead = clamped;
+    return WriteSetting("accessibility", "steering_look_ahead", std::to_string(clamped));
+}
+
 inline bool SetAudioMixWorker(bool value) {
     Mutable().audioMixWorker = value;
     return WriteSetting("audio", "mix_worker", value ? "true" : "false");
@@ -709,6 +752,58 @@ inline float VoicesVolume(float fallback = 1.0f) {
 
 inline bool AudioMuted(bool fallback = false) {
     return Get().audioMuted.value_or(fallback);
+}
+
+// Which way the engine leans for a given steering error. Personal preference, not a correctness
+// setting: some blind players steer towards the sound, others away from it, which is why Forza's
+// blind driving assist exposes the same toggle.
+// On by default again. It was off while the edge was measured against the checkpoint quads, which
+// are lap-validation volumes far wider than the road - on a real run it beeped on 42 of 43 samples.
+// It is now measured against the game's own drivable corridor along the AI route, so the fraction
+// at which it fires is a real width rather than a guess.
+inline bool AccessibilityEdgeCues(bool fallback = true) {
+    return Get().accessibilityEdgeCues.value_or(fallback);
+}
+
+// Default false - the polarity the blind play-tester validated end to end AFTER the pure-pursuit
+// rebuild, completing their first full race with it ("curva a la izquierda -> motor a la
+// derecha"). The steering law changing is exactly the "meaning chain changed" case that
+// re-decides this: under the previous two-term law the validated value was true. What is pinned
+// is the END-TO-END product (kRightIsPositive x the law's sign x this default); flip THIS
+// setting for the other meaning, never the audio constant.
+inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
+    return Get().accessibilityInvertSteeringPan.value_or(fallback);
+}
+
+// The three knobs that decide how the steering guide feels. All 0-100, all clamped, because the
+// right values are a matter of ear and of how fast the player drives - not something that can be
+// settled from the game's code.
+inline int32_t AccessibilitySteeringStrength(int32_t fallback = 60) {
+    return std::clamp(Get().accessibilitySteeringStrength.value_or(fallback), 0, 100);
+}
+
+inline int32_t AccessibilitySteeringSensitivity(int32_t fallback = 50) {
+    return std::clamp(Get().accessibilitySteeringSensitivity.value_or(fallback), 0, 100);
+}
+
+// How far ahead the steering guide's pursuit point sits. Low keeps the pan present-tense ("tiene
+// que hacerlo dentro de la curva, no antes"); higher trades that for anticipation. Default is the
+// value the player settled on by ear in their first completed race.
+inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 15) {
+    return std::clamp(Get().accessibilitySteeringLookAhead.value_or(fallback), 0, 100);
+}
+
+// Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill
+// drive) measured more central and smoother than the CPUs' enemy route on most courses, and the
+// player read the enemy line as hugging the edge; "cpu" restores the enemy route. Any value but
+// "cpu" means the item route, with automatic fallback to the enemy route when ITPT does not
+// close a lap.
+inline bool AccessibilityLineFromItemRoute(bool fallback = true) {
+    const auto& value = Get().accessibilityLineSource;
+    if (!value.has_value()) {
+        return fallback;
+    }
+    return *value != "cpu";
 }
 
 // Off-thread AX/DSP mix. Default on; false restores the fully synchronous mix.
