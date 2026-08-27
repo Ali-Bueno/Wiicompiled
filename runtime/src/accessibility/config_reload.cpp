@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
-#include "accessibility/race/phrases.h"
+#include "accessibility/localization.h"
 #include "accessibility/race/race_manager.h"
 #include "accessibility/screen_reader.h"
 #include "runtime_config.h"
@@ -80,8 +80,7 @@ void ConfigReloadTick() {
         race::InvalidateCourseMap();
     }
 
-    ScreenReader::Instance().Speak(
-        race::SpeakSpanish() ? "ajustes recargados" : "settings reloaded", /*interrupt=*/true);
+    ScreenReader::Instance().Speak(loc::Get("settings_reloaded"), /*interrupt=*/true);
 }
 
 }  // namespace a11y

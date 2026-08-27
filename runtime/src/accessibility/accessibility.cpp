@@ -4,6 +4,7 @@
 #include "accessibility/a11y_log.h"
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/config_reload.h"
+#include "accessibility/localization.h"
 #include "accessibility/race/race_manager.h"
 #include "screen_reader.h"
 #include "ui/screen_watcher.h"
@@ -22,6 +23,8 @@ void Init() {
     }
     g_initialised = true;
 
+    // Phrases first: everything spoken after this point goes through the table.
+    loc::Init();
     ScreenReader::Instance().Initialise();
     // Cues stay independent of the reader on purpose: they must still work with no screen reader
     // running, and speech must still work with no audio device.
@@ -41,7 +44,7 @@ void Tick() {
     if (!g_announced) {
         g_announced = true;
         RT_LOGF(RT_TAG_A11Y, "first frame presented; per-frame hook is live\n");
-        ScreenReader::Instance().Speak("Mario Kart Wii accessibility ready.");
+        ScreenReader::Instance().Speak(loc::Get("ready"));
     }
 
     // A saved Config.toml applies its [accessibility] edits live - the file is the settings UI

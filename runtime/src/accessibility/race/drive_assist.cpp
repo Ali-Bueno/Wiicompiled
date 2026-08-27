@@ -8,7 +8,7 @@
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/heading.h"
-#include "accessibility/race/phrases.h"
+#include "accessibility/localization.h"
 #include "accessibility/race/race_state.h"
 #include "runtime_config.h"
 #include "accessibility/screen_reader.h"
@@ -82,29 +82,29 @@ constexpr float kExitPitch = 1.5f;
 // sound marks danger. The spoken call already names the turn direction.
 constexpr float kBeepPan = 0.8f;
 
-const char* SeverityWord(TurnSeverity severity) {
-    const bool es = SpeakSpanish();
-    switch (severity) {
+// One key per whole call ("curve_hard_right_long"), so each language file states the exact
+// phrase and word order, gender and agreement never leak into code.
+std::string CurvePhrase(const Curve& curve) {
+    std::string key = "curve_";
+    switch (curve.severity) {
         case TurnSeverity::Hairpin:
-            return es ? "horquilla " : "hairpin ";
+            key += "hairpin_";
+            break;
         case TurnSeverity::Hard:
-            return es ? "cerrada " : "hard ";
+            key += "hard_";
+            break;
         case TurnSeverity::Easy:
-            return es ? "suave " : "gentle ";
+            key += "gentle_";
+            break;
         case TurnSeverity::Normal:
         default:
-            return "";
+            break;
     }
-}
-
-std::string CurvePhrase(const Curve& curve) {
-    const bool es = SpeakSpanish();
-    std::string phrase = SeverityWord(curve.severity);
-    phrase += curve.right ? (es ? "derecha" : "right") : (es ? "izquierda" : "left");
+    key += curve.right ? "right" : "left";
     if (curve.isLong) {
-        phrase += es ? " larga" : " long";
+        key += "_long";
     }
-    return phrase;
+    return loc::Get(key);
 }
 
 CueSpec BeepSpec(float pitch, bool right) {
@@ -260,7 +260,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
                 map.ArcForward(last->exit, following->entry) > kChainGapStations * spacing) {
                 break;
             }
-            phrase += SpeakSpanish() ? ", luego " : " then ";
+            phrase += loc::Get("curve_then");
             phrase += CurvePhrase(*following);
             last = following;
         }

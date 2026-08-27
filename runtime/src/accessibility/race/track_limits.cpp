@@ -6,7 +6,7 @@
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/heading.h"
-#include "accessibility/race/phrases.h"
+#include "accessibility/localization.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/screen_reader.h"
 #include "runtime_config.h"
@@ -160,10 +160,8 @@ void TrackLimits::UpdateSurface(const RaceState& state) {
     mWasOffRoad = state.offRoad;
     // Spoken on the transition only. Speaking a continuous value is what turns narration into
     // spam, and the surface either is or is not slowing the kart.
-    const bool es = SpeakSpanish();
-    ScreenReader::Instance().Speak(
-        state.offRoad ? (es ? "fuera de pista" : "off road") : (es ? "en pista" : "on road"),
-        /*interrupt=*/false);
+    ScreenReader::Instance().Speak(loc::Get(state.offRoad ? "off_road" : "on_road"),
+                                   /*interrupt=*/false);
 }
 
 void TrackLimits::UpdateWrongWay(const RaceState& state) {
@@ -172,8 +170,7 @@ void TrackLimits::UpdateWrongWay(const RaceState& state) {
     }
     mWasWrongWay = state.wrongWay;
     if (mWasWrongWay) {
-        ScreenReader::Instance().Speak(SpeakSpanish() ? "sentido contrario" : "wrong way",
-                                       /*interrupt=*/true);
+        ScreenReader::Instance().Speak(loc::Get("wrong_way"), /*interrupt=*/true);
     }
 }
 
