@@ -15,6 +15,10 @@
 #include <windows.h>
 #endif
 
+namespace a11y {
+void HandleEvents(const AuroraEvent* events) noexcept;
+}
+
 extern "C" bool g_dynamicAspectRatioEnabled;
 void ConfigureMkwDynamicAspect(bool widescreen, uint32_t surfaceWidth, uint32_t surfaceHeight);
 void UpdateMkwDynamicAspectSurface(uint32_t surfaceWidth, uint32_t surfaceHeight);
@@ -114,6 +118,7 @@ inline void ProcessAuroraEvents(const AuroraEvent* events) {
         g_mkwDynamicAspectSurfacePending.store(true, std::memory_order_release);
     }
     settings_overlay::HandleEvents(events);
+    a11y::HandleEvents(events);
 }
 
 inline void ApplyPendingMkwDynamicAspectSurface() {

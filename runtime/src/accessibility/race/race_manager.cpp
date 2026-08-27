@@ -11,9 +11,11 @@
 #include "accessibility/race/engine_pan.h"
 #include "accessibility/race/heading.h"
 #include "accessibility/race/item_beacon.h"
+#include "accessibility/race/kart_volume.h"
 #include "accessibility/race/kmp_reader.h"
 #include "accessibility/race/race_narrator.h"
 #include "accessibility/race/race_state.h"
+#include "accessibility/race/roulette_volume.h"
 #include "accessibility/race/track_limits.h"
 #include "runtime_config.h"
 
@@ -26,6 +28,8 @@ TrackLimits g_trackLimits;
 RaceNarrator g_narrator;
 ItemBeacon g_itemBeacon;
 EnginePan g_enginePan;
+KartVolume g_kartVolume;
+RouletteVolume g_rouletteVolume;
 
 // Shared so every signed cue in the mod - steering error, curve side, beacon bearing - agrees on
 // which way "right" is. Forgotten on course change: the sign re-derives from the next map's vote.
@@ -76,6 +80,8 @@ void ForgetCourse() {
     g_narrator.Reset();
     g_itemBeacon.Reset();
     g_enginePan.Reset();
+    g_kartVolume.Reset();
+    g_rouletteVolume.Reset();
 }
 
 // Temporary. One line whenever the readable/driving state changes, so a silent race says which of
@@ -232,6 +238,9 @@ void Tick() {
     // the engine is handed back to the game rather than pinned to the centre.
     const bool guiding = state.driving && RuntimeConfigFile::AccessibilitySteeringStrength() > 0;
     g_enginePan.Apply(state, g_driveAssist.SteeringPan(), guiding);
+    // Volume, unlike the pan, applies to every kart - the rivals' knob is the whole point.
+    g_kartVolume.Tick(state);
+    g_rouletteVolume.Tick(state);
     LogTelemetry(state, g_map, station, g_driveAssist.SteeringPan(),
                  g_driveAssist.LastBearingDegrees(), g_driveAssist.LastReachWidths());
     g_trackLimits.Tick(state, g_map, g_handedness, station, dtSec);

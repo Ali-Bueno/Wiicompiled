@@ -81,6 +81,7 @@ constexpr float kExitPitch = 1.5f;
 // away from - so they speak the same direction language as the engine pan and the edge cue:
 // sound marks danger. The spoken call already names the turn direction.
 constexpr float kBeepPan = 0.8f;
+constexpr float kDemoCurvePan = 0.7f;  // demo: el lado del peligro suena a la derecha
 
 // One key per whole call ("curve_hard_right_long"), so each language file states the exact
 // phrase and word order, gender and agreement never leak into code.
@@ -125,6 +126,12 @@ float LeadSeconds(float distance, float speed) {
 }
 
 }  // namespace
+
+void PlayCurveCueDemo() {
+    CueSpec beep = BeepSpec(kEntryPitch, /*right=*/true);  // entry beep, the representative one
+    beep.pan = kDemoCurvePan;
+    CueService::Instance().PlayOneShot(CueChannel::Curve, beep);
+}
 
 void DriveAssist::Reset() {
     mSmoothedPan = 0.0f;

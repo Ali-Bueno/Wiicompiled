@@ -55,7 +55,20 @@ constexpr float kEdgePan = 0.85f;
 constexpr float kIntervalFarSec = 0.45f;
 constexpr float kIntervalNearSec = 0.09f;
 
+constexpr float kDemoEdgeSec = 0.8f;  // demo: long enough to hear the held tone's timbre clearly
+constexpr float kDemoEdgePan = 0.7f;  // demo: el lado del peligro suena a la derecha
+
 }  // namespace
+
+void PlayEdgeCueDemo() {
+    CueSpec tone;
+    tone.shape = Waveform::Triangle;
+    tone.frequencyHz = kEdgeHz * kEdgeTonePitch;
+    tone.amplitude = kEdgeToneAmplitude;
+    tone.pan = kDemoEdgePan;
+    tone.durationSec = kDemoEdgeSec;
+    CueService::Instance().PlayOneShot(CueChannel::Edge, tone);
+}
 
 void TrackLimits::Reset() {
     mBeepTimer = 0.0f;

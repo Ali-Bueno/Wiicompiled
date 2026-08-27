@@ -24,6 +24,9 @@ private:
     float mBlipTimer = 0.0f;
 };
 
+// Menu preview: plays the near, centred item-box blip as a one-shot.
+void PlayItemBoxCueDemo();
+
 }  // namespace a11y::race
 
 #endif  // MKW_ACCESSIBILITY_RACE_ITEM_BEACON_H

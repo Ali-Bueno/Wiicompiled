@@ -53,6 +53,9 @@ struct RuntimeUserConfig {
     std::optional<int32_t> accessibilitySteeringSensitivity;
     std::optional<int32_t> accessibilitySteeringLookAhead;
     std::optional<std::string> accessibilityLineSource;
+    std::optional<int32_t> accessibilityKartVolume;
+    std::optional<int32_t> accessibilityRivalKartVolume;
+    std::optional<int32_t> accessibilityItemRouletteVolume;
     std::optional<bool> audioMixWorker;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     std::optional<bool> networkEnabled;
@@ -412,6 +415,11 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigInt(document, "accessibility", "steering_look_ahead");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
+    config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
+    config.accessibilityRivalKartVolume =
+        FindConfigInt(document, "accessibility", "rival_kart_volume");
+    config.accessibilityItemRouletteVolume =
+        FindConfigInt(document, "accessibility", "item_roulette_volume");
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
@@ -695,6 +703,29 @@ inline bool SetAccessibilitySteeringLookAhead(int32_t value) {
     return WriteSetting("accessibility", "steering_look_ahead", std::to_string(clamped));
 }
 
+inline bool SetAccessibilityEdgeCues(bool value) {
+    Mutable().accessibilityEdgeCues = value;
+    return WriteSetting("accessibility", "edge_cues", value ? "true" : "false");
+}
+
+inline bool SetAccessibilityKartVolume(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 200);
+    Mutable().accessibilityKartVolume = clamped;
+    return WriteSetting("accessibility", "kart_volume", std::to_string(clamped));
+}
+
+inline bool SetAccessibilityRivalKartVolume(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilityRivalKartVolume = clamped;
+    return WriteSetting("accessibility", "rival_kart_volume", std::to_string(clamped));
+}
+
+inline bool SetAccessibilityItemRouletteVolume(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilityItemRouletteVolume = clamped;
+    return WriteSetting("accessibility", "item_roulette_volume", std::to_string(clamped));
+}
+
 inline bool SetAudioMixWorker(bool value) {
     Mutable().audioMixWorker = value;
     return WriteSetting("audio", "mix_worker", value ? "true" : "false");
@@ -804,6 +835,26 @@ inline bool AccessibilityLineFromItemRoute(bool fallback = true) {
         return fallback;
     }
     return *value != "cpu";
+}
+
+// Per-kart engine volume. Applied by the accessibility mod as a multiplier on each kart's own
+// sound set (BasicSound+0xA4 initial volume); 100 leaves the game untouched. The player's own
+// kart goes up to 200: +0xA4 is an unclamped factor (the real clamp sits at Voice::SetVolume,
+// which saturates the end product safely), so >100 is a genuine boost against the distance and
+// fade factors. Rival karts get their own knob so a blind player can pull them under their own
+// engine, which carries the steering guide.
+inline int32_t AccessibilityKartVolume(int32_t fallback = 100) {
+    return std::clamp(Get().accessibilityKartVolume.value_or(fallback), 0, 200);
+}
+
+inline int32_t AccessibilityRivalKartVolume(int32_t fallback = 100) {
+    return std::clamp(Get().accessibilityRivalKartVolume.value_or(fallback), 0, 100);
+}
+
+// The item roulette's spin sound (and the item-decided jingle), 0-100. It shares the UI bus with
+// everything else, so this per-sound knob exists instead of asking the player to lower ui_volume.
+inline int32_t AccessibilityItemRouletteVolume(int32_t fallback = 100) {
+    return std::clamp(Get().accessibilityItemRouletteVolume.value_or(fallback), 0, 100);
 }
 
 // Off-thread AX/DSP mix. Default on; false restores the fully synchronous mix.

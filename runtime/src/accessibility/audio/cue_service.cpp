@@ -11,9 +11,6 @@
 namespace a11y::audio {
 namespace {
 
-// The runtime's own backend opens at 32 kHz (runtime/src/audio_backend.cpp:57) and every cue tone
-// sits well below a quarter of that, so the same rate is ample and keeps the two streams alike.
-constexpr int kSampleRate = 32000;
 constexpr int kChannels = 2;
 
 // Three frames of audio kept queued. The tick that refills this is one frame apart, so three
@@ -74,6 +71,7 @@ bool CueService::Start() {
     SDL_SetAudioStreamGain(stream, mMasterVolume);
 
     mStream = stream;
+    SampleBank::Instance().Load();
     RT_LOGF(RT_TAG_A11Y, "cue audio: stream open at %d Hz\n", kSampleRate);
     return true;
 }
@@ -105,6 +103,11 @@ void CueService::Apply(Voice& voice, const CueSpec& spec, bool sustained, bool r
     voice.stopping = false;
     voice.attackStep = StepFor(spec.attackSec);
     voice.releaseStep = StepFor(spec.releaseSec);
+    voice.sample = SampleBank::Instance().Get(spec.sample);
+    voice.rate = std::max(spec.pitch, 0.0f);
+    if (restart) {
+        voice.samplePos = 0.0f;
+    }
     if (!sustained) {
         voice.remainingSec = spec.durationSec;
     }
@@ -167,7 +170,8 @@ void CueService::Render(int frames) {
         const float gainRStep = (voice.targetGainR - voice.gainR) * invFrames;
 
         for (int i = 0; i < frames; ++i) {
-            if (!voice.sustained && !voice.stopping) {
+            // A sample plays to its own end; only synthesized one-shots run on the timer.
+            if (!voice.sample && !voice.sustained && !voice.stopping) {
                 voice.remainingSec -= secPerSample;
                 if (voice.remainingSec <= 0.0f) {
                     voice.stopping = true;
@@ -177,12 +181,26 @@ void CueService::Render(int frames) {
             const float step = target > voice.env ? voice.attackStep : voice.releaseStep;
             voice.env += std::clamp(target - voice.env, -step, step);
 
-            const float sample = SampleWaveform(voice.shape, voice.phase) * voice.amp * voice.env;
+            float raw = 0.0f;
+            if (voice.sample) {
+                const std::vector<float>& pcm = voice.sample->mono;
+                const size_t index = static_cast<size_t>(voice.samplePos);
+                if (index + 1 < pcm.size()) {
+                    const float frac = voice.samplePos - static_cast<float>(index);
+                    raw = pcm[index] + (pcm[index + 1] - pcm[index]) * frac;
+                    voice.samplePos += voice.rate;
+                } else {
+                    voice.stopping = true;
+                }
+            } else {
+                raw = SampleWaveform(voice.shape, voice.phase);
+                voice.phase += voice.freq * secPerSample;
+                voice.phase -= std::floor(voice.phase);
+            }
+            const float sample = raw * voice.amp * voice.env;
             mMix[static_cast<size_t>(i) * kChannels] += sample * voice.gainL;
             mMix[static_cast<size_t>(i) * kChannels + 1] += sample * voice.gainR;
 
-            voice.phase += voice.freq * secPerSample;
-            voice.phase -= std::floor(voice.phase);
             voice.freq += freqStep;
             voice.amp += ampStep;
             voice.gainL += gainLStep;

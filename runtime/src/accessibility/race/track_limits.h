@@ -38,6 +38,9 @@ private:
     bool mWasWrongWay = false;
 };
 
+// Menu preview: plays the held off-road tone as a one-shot, no race state needed.
+void PlayEdgeCueDemo();
+
 }  // namespace a11y::race
 
 #endif  // MKW_ACCESSIBILITY_RACE_TRACK_LIMITS_H

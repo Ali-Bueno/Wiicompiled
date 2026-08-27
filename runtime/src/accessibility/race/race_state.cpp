@@ -118,6 +118,25 @@ bool ReadHeading(std::uint32_t movement, std::uint32_t holder, float speed, floa
 
 }  // namespace
 
+int ReadKartObjects(std::uint32_t* out, int maxCount) {
+    std::uint32_t manager = 0;
+    std::uint32_t karts = 0;
+    std::uint8_t count = 0;
+    if (!TryPointer(kKartManagerPtr, manager) ||
+        !TryPointer(manager + kManagerKartArray, karts) ||
+        !TryU8(manager + kManagerKartCount, count)) {
+        return 0;
+    }
+    int written = 0;
+    for (std::uint32_t i = 0; i < count && written < maxCount; ++i) {
+        std::uint32_t kart = 0;
+        if (TryPointer(karts + i * kPointerStride, kart)) {
+            out[written++] = kart;
+        }
+    }
+    return written;
+}
+
 void ResetRaceState() {
     g_state = RaceState{};
 }

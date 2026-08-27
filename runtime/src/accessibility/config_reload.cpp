@@ -71,6 +71,9 @@ void ConfigReloadTick() {
     apply(live.accessibilitySteeringLookAhead, fresh.accessibilitySteeringLookAhead);
     apply(live.accessibilityEdgeCues, fresh.accessibilityEdgeCues);
     apply(live.accessibilityLineSource, fresh.accessibilityLineSource);
+    apply(live.accessibilityKartVolume, fresh.accessibilityKartVolume);
+    apply(live.accessibilityRivalKartVolume, fresh.accessibilityRivalKartVolume);
+    apply(live.accessibilityItemRouletteVolume, fresh.accessibilityItemRouletteVolume);
     if (!changed) {
         return;  // spoken only when something audible really changed
     }

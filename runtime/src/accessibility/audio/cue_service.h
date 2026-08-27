@@ -4,11 +4,16 @@
 #include <cstdint>
 #include <vector>
 
+#include "accessibility/audio/sample_bank.h"
 #include "accessibility/audio/waveform.h"
 
 struct SDL_AudioStream;
 
 namespace a11y::audio {
+
+// The runtime's own backend opens at 32 kHz (runtime/src/audio_backend.cpp:57) and every cue tone
+// sits well below a quarter of that, so the same rate is ample and keeps the two streams alike.
+inline constexpr int kSampleRate = 32000;
 
 // One voice per channel: a cue replaces whatever that channel was playing, and never cuts another
 // family off. Carried over from the MK64 mod, where a curve beep silencing the track-limit tone
@@ -30,9 +35,13 @@ struct CueSpec {
     float frequencyHz = 0.0f;
     float amplitude = 0.0f;    // 0..1, before the master volume
     float pan = 0.0f;          // -1 hard left, 0 centre, +1 hard right
-    float durationSec = 0.0f;  // one-shots only; SetSustained ignores it
+    float durationSec = 0.0f;  // one-shots only; SetSustained and samples ignore it
     float attackSec = kDefaultAttackSec;
     float releaseSec = kDefaultReleaseSec;
+    // A loaded sample replaces the synthesized waveform; it plays to its own end, with
+    // pitch as a playback-rate multiplier. shape/frequencyHz are ignored while set.
+    SampleId sample = SampleId::None;
+    float pitch = 1.0f;
 };
 
 // Our own SDL stream, deliberately not the game's audio path: audio_backend.h is a single queue,
@@ -76,6 +85,9 @@ private:
         float env = 0.0f;  // attack/release envelope, 0..1
         float attackStep = 0.0f, releaseStep = 0.0f;  // per sample
         float remainingSec = 0.0f;
+        const Sample* sample = nullptr;  // owned by the SampleBank, which never unloads
+        float samplePos = 0.0f;          // in source samples; fractional part interpolates
+        float rate = 1.0f;
     };
 
     Voice& VoiceFor(CueChannel channel) { return mVoices[static_cast<int>(channel)]; }

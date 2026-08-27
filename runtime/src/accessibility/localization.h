@@ -1,12 +1,17 @@
 #ifndef MKW_ACCESSIBILITY_LOCALIZATION_H
 #define MKW_ACCESSIBILITY_LOCALIZATION_H
 
+#include <filesystem>
 #include <initializer_list>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace a11y::loc {
+
+// Directory of the running exe — where the mod's data folders (accessibility_lang,
+// accessibility_sounds) live. Shared so no other file re-derives it.
+std::filesystem::path ExeDirectory();
 
 // Loads the phrase table for the Wii system language the game itself runs in
 // ([system].language in Config.toml — the value our SCGetLanguage stub serves the game).

@@ -15,6 +15,8 @@ namespace {
 using audio::CueChannel;
 using audio::CueService;
 using audio::CueSpec;
+using audio::SampleBank;
+using audio::SampleId;
 using audio::Waveform;
 
 // ObjectsMgr::CreateInstance (0x8082A784) stores the instance here and DestroyInstance zeroes it.
@@ -145,7 +147,28 @@ bool NearestBox(const RaceState& state, float range, float& outX, float& outZ) {
     return found;
 }
 
+// Shared by the live Tick blip and the menu demo, so the two constructions cannot drift apart.
+CueSpec MakeBeaconBlip(float pitch, float amplitude, float pan) {
+    CueSpec blip;
+    if (SampleBank::Instance().Has(SampleId::ItemBox)) {
+        blip.sample = SampleId::ItemBox;  // MK64's item box sound, restarted each interval
+        blip.pitch = pitch;
+    } else {
+        blip.shape = Waveform::Sine;
+        blip.frequencyHz = kBeaconHz * pitch;
+        blip.durationSec = kBeaconBlipSec;
+    }
+    blip.amplitude = amplitude;
+    blip.pan = pan;
+    return blip;
+}
+
 }  // namespace
+
+void PlayItemBoxCueDemo() {
+    CueService::Instance().PlayOneShot(CueChannel::ItemBox,
+                                       MakeBeaconBlip(1.0f, kBeaconVolumeNear, 0.0f));
+}
 
 void ItemBeacon::Reset() {
     mBlipTimer = 0.0f;
@@ -186,16 +209,13 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
     const float distance = std::sqrt(dx * dx + dz * dz);
     const float nearness = std::clamp(1.0f - distance / range, 0.0f, 1.0f);
 
-    CueSpec blip;
-    blip.shape = Waveform::Sine;
     // Ahead keeps full pitch; the further behind it falls, the lower it drops.
     const float ahead = std::cos(bearing);
     const float behind = std::clamp(-ahead, 0.0f, 1.0f);
-    blip.frequencyHz = kBeaconHz * (1.0f - behind * (1.0f - kBeaconPassedPitch));
-    blip.amplitude = kBeaconVolumeFar + (kBeaconVolumeNear - kBeaconVolumeFar) * nearness;
-    blip.pan = std::clamp(bearing / kBeaconFullLeanRad, -1.0f, 1.0f);
-    blip.durationSec = kBeaconBlipSec;
-    CueService::Instance().PlayOneShot(CueChannel::ItemBox, blip);
+    const float pitch = 1.0f - behind * (1.0f - kBeaconPassedPitch);
+    const float amplitude = kBeaconVolumeFar + (kBeaconVolumeNear - kBeaconVolumeFar) * nearness;
+    const float pan = std::clamp(bearing / kBeaconFullLeanRad, -1.0f, 1.0f);
+    CueService::Instance().PlayOneShot(CueChannel::ItemBox, MakeBeaconBlip(pitch, amplitude, pan));
 }
 
 }  // namespace a11y::race

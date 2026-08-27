@@ -54,6 +54,27 @@ constexpr Phrase kEnglishDefaults[] = {
     {"off_road", "off road"},
     {"on_road", "on road"},
     {"wrong_way", "wrong way"},
+
+    {"menu_opened",
+     "accessibility settings. Up and down to choose, left and right to adjust, A to activate, B to close."},
+    {"menu_closed", "settings closed"},
+    {"menu_race_blocked", "settings open from the menus, not during a race"},
+    {"opt_master_volume", "master volume"},
+    {"opt_music_volume", "music volume"},
+    {"opt_kart_volume", "my kart volume"},
+    {"opt_rival_volume", "rival karts volume"},
+    {"opt_roulette_volume", "item roulette volume"},
+    {"opt_steering_strength", "steering guide strength"},
+    {"opt_steering_sensitivity", "steering sensitivity"},
+    {"opt_look_ahead", "steering look ahead"},
+    {"opt_invert_pan", "invert steering pan"},
+    {"opt_edge_cues", "edge cues"},
+    {"demo_edge", "hear the edge tone"},
+    {"demo_curve", "hear a curve beep"},
+    {"demo_itembox", "hear the item box"},
+    {"value_on", "on"},
+    {"value_off", "off"},
+    {"percent", "{n} percent"},
 };
 
 // Wii SYSCONF IPL.LNG values, as the port documents them (runtime_config.h SystemLanguage():
@@ -94,11 +115,15 @@ std::string_view Unquote(std::string_view value) {
     return value;
 }
 
+}  // namespace
+
 std::filesystem::path ExeDirectory() {
     wchar_t buffer[MAX_PATH] = {};
     const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     return std::filesystem::path(std::wstring(buffer, length)).parent_path();
 }
+
+namespace {
 
 void LoadLanguageFile(const std::filesystem::path& path, const char* code) {
     std::ifstream file(path);

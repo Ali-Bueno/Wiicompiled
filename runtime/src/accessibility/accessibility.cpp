@@ -5,6 +5,7 @@
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/config_reload.h"
 #include "accessibility/localization.h"
+#include "accessibility/menu/settings_menu.h"
 #include "accessibility/race/race_manager.h"
 #include "screen_reader.h"
 #include "ui/screen_watcher.h"
@@ -57,6 +58,10 @@ void Tick() {
 
     // Reads the kart and the course once, then drives the driving assists from it.
     race::Tick();
+
+    // Drains the actions the host event thread queued; runs here so speech and guest reads
+    // stay on the guest thread.
+    menu::SettingsMenu::Instance().Tick();
 
     // Last, so every cue raised this frame is rendered in the same tick that asked for it.
     audio::CueService::Instance().Tick();

@@ -55,6 +55,11 @@ struct RaceState {
 // `valid` false. Mutable so the caller can fill in the fields that need a frame duration to derive.
 RaceState& ReadRaceState();
 
+// Every Kart::Player* in the race - the human and the rivals - for services that act per kart.
+// Returns how many were written, 0 when no race is loaded. Lives here so the manager-walk
+// constants stay in one file.
+int ReadKartObjects(std::uint32_t* out, int maxCount);
+
 // Drops any cached pointers, so the next read re-resolves them. Called when a course unloads.
 void ResetRaceState();
 

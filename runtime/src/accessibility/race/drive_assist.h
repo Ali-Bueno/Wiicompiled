@@ -68,6 +68,9 @@ private:
     int mPhase = 0;
 };
 
+// Menu preview: plays a representative corner-entry beep as a one-shot.
+void PlayCurveCueDemo();
+
 }  // namespace a11y::race
 
 #endif  // MKW_ACCESSIBILITY_RACE_DRIVE_ASSIST_H
