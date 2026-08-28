@@ -27,14 +27,24 @@ constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cp
 constexpr int kApproachStages = 3;
 
 // Two corners are chained - "no real straight between them" - when the gap cannot fit the
-// follower's LAST approach beep, so its countdown could not be told apart from the corner the kart
-// is still in. Measured against the first beep instead, a chain reached 2.5 s of travel - about ten
-// median half-widths, five road widths - and swallowed most corner pairs on the course: the
-// follower lost its countdown and was folded into a phrase spoken before its predecessor. Seconds
-// at the current speed, like every other lead here, because a fixed station count reads differently
-// on every route density.
-constexpr int kChainLeadStage = kApproachStages - 1;
+// follower's OWN countdown, so it can never be warned separately and has to ride in the leader's
+// phrase. Seconds at the current speed, like every other lead here, because a fixed station count
+// reads differently on every route density.
+//
+// Measured against the LAST beep (0.7 s) this was far too narrow, and a logged race showed the
+// hole it leaves: gaps of one route station on that course were 1.15 s, outside the chain, so the
+// follower got neither the leader's phrase nor a countdown of its own. Curve 6 ("hairpin right")
+// was called 0.7 s before its entry with no beeps, and curve 34 ("hairpin left") 0.2 s before,
+// every lap. Widening it to the FIRST beep was tried once and rejected because chaining then meant
+// total silence for the follower - it lost its countdown outright. It no longer does: a chained
+// corner keeps one beep (kChainedStage), so the reason that rejection stood is gone.
+constexpr int kChainLeadStage = 0;
 constexpr int kMaxChain = 3;
+
+// What a chained corner keeps of the countdown: the last stage only, one beep just before its
+// entry. Player's call, 2026-08-28, choosing between the full cascade and nothing at all - the
+// corner was already named inside the leader's phrase, so this marks the *when*, not the *what*.
+constexpr int kChainedStage = kApproachStages - 1;
 
 // A corner stays the one being described until its exit is this far behind, so the cues do not flip
 // to the next corner the moment this one's exit is crossed.
@@ -209,29 +219,40 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     const bool insideCorner = active != upcoming && map.ArcSignedTo(arc, active->entry) <= 0.0f &&
                               map.ArcSignedTo(arc, active->exit) > 0.0f;
 
-    const bool countdownDue = !chained && !spokenInChain && mApproachBeeps < kApproachStages &&
-                              toEntry > 0.0f && lead <= kApproachLeadSec[mApproachBeeps];
-    if (countdownDue && insideCorner) {
-        // Corners so close that the next one's countdown would sound over this one's traversal
-        // beeps. The player's rule: "las curvas están tan juntas que se mezcla la cuenta atrás de
-        // la próxima curva con el cue de curva actual. en ese caso ya debería contarse como curva
-        // seguida y no hacer el sonido de cuenta atrás, solo entrada barra medio barra salida".
-        //
-        // Consumed outright rather than deferred, so no stray beep lands at the exit either - the
-        // corner is treated exactly as a chained one and keeps only its traversal beeps.
-        //
-        // Tested at the instant a beep would have fired, which is why it needs no gap threshold of
-        // its own: it silences precisely the countdowns that would overlap, on any course and at
-        // any speed. Widening the static `chainGap` to the first approach stage was tried before
-        // and rejected - at 2.5 s it chained nearly every pair and muted countdowns everywhere
-        // (review #4) - so that calibration stays untouched.
-        mApproachBeeps = kApproachStages;
-    } else if (countdownDue) {
+    // The traversal landmark this tick would beep, resolved BEFORE the countdown so the two cue
+    // families cannot collide: the Curve channel is a single voice and a one-shot restarts it, so
+    // an approach beep issued in the same tick as an entry/apex/exit beep would silently eat it.
+    // The traversal beep wins - it marks where the kart IS - and the approach stage waits a tick.
+    //
+    // This replaces a rule that consumed the follower's countdown outright whenever a beep would
+    // have fallen inside the corner being driven. It was written when both families were the same
+    // sound and a countdown really could be mistaken for a traversal beep; they are now a centred
+    // sine against a panned square, and the log it was meant to protect shows what it cost -
+    // curve 34, a hairpin, reduced to one beep 0.2 s before its entry.
+    int reached = mPhase;
+    if (reached < 1 && map.ArcSignedTo(arc, active->entry) <= 0.0f) {
+        reached = 1;
+    }
+    if (reached == 1 && map.ArcSignedTo(arc, active->apex) <= 0.0f) {
+        reached = 2;
+    }
+    if (reached >= 1 && reached < 3 && map.ArcSignedTo(arc, active->exit) <= 0.0f) {
+        reached = 3;
+    }
+    const bool landmarkThisTick = reached != mPhase;
+
+    // A corner folded into a predecessor's phrase was already named, so it keeps one beep instead
+    // of the three-stage cascade; every other corner starts at the top.
+    const int firstStage = (chained || spokenInChain) ? kChainedStage : 0;
+    const int fromStage = std::max(mApproachBeeps, firstStage);
+    const bool countdownDue = !landmarkThisTick && fromStage < kApproachStages &&
+                              toEntry > 0.0f && lead <= kApproachLeadSec[fromStage];
+    if (countdownDue) {
         // A crash or respawn can land the kart already inside every countdown window; playing the
         // whole cascade then crams three beeps into three frames (heard live on kinoko's curve
         // 10). Skip to the furthest stage already reached and play only that one - same rule the
         // entry/apex/exit beeps follow.
-        int stage = mApproachBeeps;
+        int stage = fromStage;
         while (stage + 1 < kApproachStages && lead <= kApproachLeadSec[stage + 1]) {
             ++stage;
         }
@@ -286,21 +307,18 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // voice and a one-shot restarts it, so two landmarks crossed in the same tick (a two-station
     // corner puts the apex ON the entry) would silently eat each other - the furthest one reached
     // is the truth of where the kart is.
-    int reached = mPhase;
-    if (reached < 1 && map.ArcSignedTo(arc, active->entry) <= 0.0f) {
-        reached = 1;
-    }
-    if (reached == 1 && map.ArcSignedTo(arc, active->apex) <= 0.0f) {
-        reached = 2;
-    }
-    if (reached >= 1 && reached < 3 && map.ArcSignedTo(arc, active->exit) <= 0.0f) {
-        reached = 3;
-    }
-    if (reached != mPhase) {
+    if (landmarkThisTick) {
         constexpr float kPhasePitch[] = {kEntryPitch, kEntryPitch, kApexPitch, kExitPitch};
+        // The pitch of the EARLIEST landmark newly reached, not the furthest. EmitCurve puts the
+        // apex at entry + steps/2, so a corner spanning one station has apex == entry and a
+        // zero-length one has all three together; taking the furthest played the apex or exit
+        // pitch and the ENTRY beep - the one that says turn in now - never sounded at all on the
+        // tightest corners of the logged race (curves 6 and 32, both hairpin-grade, and curve 30,
+        // a single station). The phase still advances to the furthest, so the exit still hands the
+        // focus to the next corner.
+        const float pitch = kPhasePitch[mPhase + 1];
         mPhase = reached;
-        CueService::Instance().PlayOneShot(CueChannel::Curve,
-                                           LandmarkBeep(kPhasePitch[reached], active->right));
+        CueService::Instance().PlayOneShot(CueChannel::Curve, LandmarkBeep(pitch, active->right));
         RT_LOGF(RT_TAG_A11Y, "curve beep phase=%d (1 entry, 2 apex, 3 exit): curve=%d arc=%.0f\n",
                 reached, active->entry, static_cast<double>(arc));
     }
