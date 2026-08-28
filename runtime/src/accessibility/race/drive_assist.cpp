@@ -70,6 +70,20 @@ constexpr int kPositionGainDefault = 50;
 // which is about the smallest step the ear places at all.
 constexpr float kPositionLogStep = 0.05f;
 
+// How hard the corner at `arc` is, as a multiplier on the guide's lean: 1.0 on a straight, and a
+// corner's own `intensity` inside one (1.0 at the game's corner threshold, a little over 3 at a
+// hairpin). Read at the AIM POINT rather than at the kart, so the accent arrives and fades with
+// the lean it deepens instead of stepping at the entry line - the guide already keeps one
+// anticipation horizon and this rides on it.
+float CurveAccentAt(const CourseMap& map, float arc) {
+    const Curve* curve = map.ActiveCurveAt(arc, 0.0f);
+    if (curve == nullptr || map.ArcSignedTo(arc, curve->entry) > 0.0f ||
+        map.ArcSignedTo(arc, curve->exit) <= 0.0f) {
+        return 1.0f;
+    }
+    return std::max(1.0f, curve->intensity);
+}
+
 }  // namespace
 
 void DriveAssist::Reset() {
@@ -150,7 +164,15 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     const float strength = Fraction(RuntimeConfigFile::AccessibilitySteeringStrength());
     const float sensitivity = Fraction(RuntimeConfigFile::AccessibilitySteeringSensitivity());
     const float fullLean = kFullLeanAnchorRad * std::pow(2.0f, 1.0f - 2.0f * sensitivity);
-    float toward = std::clamp(bearing / fullLean, -1.0f, 1.0f);
+    // The corner's own tightness deepens the lean. Player, 2026-08-28: "durante las curvas, el
+    // paneo del motor debe acentuarse de acuerdo con la intensidad de la curva". It MULTIPLIES the
+    // pursuit bearing instead of adding an offset, so a straight is untouched and centred still
+    // means on the line - the one thing about the guide the player asked to keep. At the top of
+    // the knob a corner leans by its full intensity; at zero the guide is exactly what it was.
+    const float accent =
+        1.0f + Fraction(RuntimeConfigFile::AccessibilitySteeringCurveAccent()) *
+                   (CurveAccentAt(map, arc + aimDistance) - 1.0f);
+    float toward = std::clamp(accent * bearing / fullLean, -1.0f, 1.0f);
     const bool astern = std::fabs(bearing) > kAsternRad;
     if (astern) {
         // The aim point is behind: its side is the recovery signal and nothing else may dilute it.

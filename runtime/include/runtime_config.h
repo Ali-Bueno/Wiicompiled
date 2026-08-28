@@ -53,6 +53,7 @@ struct RuntimeUserConfig {
     std::optional<int32_t> accessibilitySteeringSensitivity;
     std::optional<int32_t> accessibilitySteeringLookAhead;
     std::optional<int32_t> accessibilitySteeringPositionGain;
+    std::optional<int32_t> accessibilitySteeringCurveAccent;
     std::optional<std::string> accessibilityLineSource;
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
@@ -290,6 +291,9 @@ inline void EnsureConfigFile() {
               "# mas adelante, no donde estas: centro = vas camino de estar en la linea, y cruzarla\n"
               "# con velocidad inclina el motor aunque ahora mismo estes centrado. 0 lo apaga.\n"
               "steering_position_gain = 50\n"
+              "# Cuanto profundiza el paneo del motor segun lo cerrada que sea la curva. 0 lo\n"
+              "# apaga, 100 es el maximo.\n"
+              "steering_curve_accent = 50\n"
               "invert_steering_pan = false\n"
               "# Which line the guide follows: \"item\" (the route red shells fly - the default,\n"
               "# measured more centred on most courses) or \"cpu\" (the CPU drivers' route). The\n"
@@ -443,6 +447,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigInt(document, "accessibility", "steering_look_ahead");
     config.accessibilitySteeringPositionGain =
         FindConfigInt(document, "accessibility", "steering_position_gain");
+    config.accessibilitySteeringCurveAccent =
+        FindConfigInt(document, "accessibility", "steering_curve_accent");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
@@ -739,6 +745,12 @@ inline bool SetAccessibilitySteeringPositionGain(int32_t value) {
     return WriteSetting("accessibility", "steering_position_gain", std::to_string(clamped));
 }
 
+inline bool SetAccessibilitySteeringCurveAccent(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringCurveAccent = clamped;
+    return WriteSetting("accessibility", "steering_curve_accent", std::to_string(clamped));
+}
+
 inline bool SetAccessibilityEdgeCues(bool value) {
     Mutable().accessibilityEdgeCues = value;
     return WriteSetting("accessibility", "edge_cues", value ? "true" : "false");
@@ -868,6 +880,12 @@ inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 57) {
 // 100 doubles it, 0 leaves the pure pursuit guide the player already tuned.
 inline int32_t AccessibilitySteeringPositionGain(int32_t fallback = 50) {
     return std::clamp(Get().accessibilitySteeringPositionGain.value_or(fallback), 0, 100);
+}
+
+// How much tighter corners deepen the engine pan, on top of the pursuit error. 0 leaves the pan
+// flat with respect to curvature, 100 is the maximum deepening.
+inline int32_t AccessibilitySteeringCurveAccent(int32_t fallback = 50) {
+    return std::clamp(Get().accessibilitySteeringCurveAccent.value_or(fallback), 0, 100);
 }
 
 // Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill

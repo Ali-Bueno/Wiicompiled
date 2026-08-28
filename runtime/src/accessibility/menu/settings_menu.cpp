@@ -165,6 +165,14 @@ void SettingsMenu::BuildOptions() {
                  StepKnob(RuntimeConfigFile::AccessibilitySteeringPositionGain(), dir));
          },
          nullptr});
+    mOptions.push_back(
+        {"opt_curve_accent",
+         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringCurveAccent()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringCurveAccent(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringCurveAccent(), dir));
+         },
+         nullptr});
 
     const auto toggleInvert = [] {
         RuntimeConfigFile::SetAccessibilityInvertSteeringPan(

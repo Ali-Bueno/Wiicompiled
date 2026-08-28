@@ -129,6 +129,8 @@ void CourseMap::EmitCurve(int entry, int end) {
     // this the spoken side and the beep pan are mirrored on half the courses.
     curve.right = totalTurn * mRightPerpSign > 0.0f;
     curve.severity = SeverityFor(peak, totalDegrees);
+    // The same peak the severity is graded from, kept continuous and against the same anchor.
+    curve.intensity = peak / kTightnessNormal;
     curve.isLong = mMeanSpacing > 0.0f &&
                    ArcForward(entry, end) > kLongCurveStations * mMeanSpacing;
     mCurves.push_back(curve);
@@ -213,9 +215,10 @@ void CourseMap::LogCurveMap() const {
                 static_cast<double>(HalfWidth(i)));
     }
     for (const Curve& c : mCurves) {
-        RT_LOGF(RT_TAG_A11Y, "  curve entry=%d apex=%d exit=%d %s severity=%d long=%d arc=%.0f\n",
+        RT_LOGF(RT_TAG_A11Y,
+                "  curve entry=%d apex=%d exit=%d %s severity=%d int=%.2f long=%d arc=%.0f\n",
                 c.entry, c.apex, c.exit, c.right ? "right" : "left",
-                static_cast<int>(c.severity), c.isLong ? 1 : 0,
+                static_cast<int>(c.severity), static_cast<double>(c.intensity), c.isLong ? 1 : 0,
                 static_cast<double>(ArcForward(c.entry, c.exit)));
     }
 }

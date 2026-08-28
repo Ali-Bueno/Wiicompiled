@@ -20,6 +20,11 @@ struct Curve {
     bool right = false;
     TurnSeverity severity = TurnSeverity::Easy;
     bool isLong = false;
+    // The corner's peak tightness expressed against the game's own "this is a corner" threshold:
+    // 1.0 is exactly that corner, a hairpin is a little over 3. The severity enum is the same
+    // measurement quantised for speech; this keeps it continuous for the steering guide, which
+    // deepens its lean with it and would step audibly on four levels.
+    float intensity = 0.0f;
 };
 
 // The driving line and the track limits.

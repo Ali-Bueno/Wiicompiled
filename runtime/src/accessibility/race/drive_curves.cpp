@@ -35,16 +35,17 @@ constexpr int kApproachStages = 3;
 // hole it leaves: gaps of one route station on that course were 1.15 s, outside the chain, so the
 // follower got neither the leader's phrase nor a countdown of its own. Curve 6 ("hairpin right")
 // was called 0.7 s before its entry with no beeps, and curve 34 ("hairpin left") 0.2 s before,
-// every lap. Widening it to the FIRST beep was tried once and rejected because chaining then meant
-// total silence for the follower - it lost its countdown outright. It no longer does: a chained
-// corner keeps one beep (kChainedStage), so the reason that rejection stood is gone.
+// every lap. Widening it to the FIRST beep was tried once and rejected because it muted the
+// follower's countdown everywhere; the player has since specified that muting as the behaviour
+// they want, so the objection no longer applies.
+//
+// The player's rule for a run of corners, 2026-08-28: "los cues de cuenta regresiva suenan para la
+// primera. pero luego para la segunda y sucessivamente no suena mas hasta acabarse las curvas y
+// haber una recta por la cual respirar". The countdown belongs to the run, not to each corner in
+// it: it leads the first, and nothing else counts down until a straight wide enough to breathe in
+// resets the pattern. Every corner still keeps its own entry/apex/exit beeps.
 constexpr int kChainLeadStage = 0;
 constexpr int kMaxChain = 3;
-
-// What a chained corner keeps of the countdown: the last stage only, one beep just before its
-// entry. Player's call, 2026-08-28, choosing between the full cascade and nothing at all - the
-// corner was already named inside the leader's phrase, so this marks the *when*, not the *what*.
-constexpr int kChainedStage = kApproachStages - 1;
 
 // A corner stays the one being described until its exit is this far behind, so the cues do not flip
 // to the next corner the moment this one's exit is crossed.
@@ -241,12 +242,13 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     }
     const bool landmarkThisTick = reached != mPhase;
 
-    // A corner folded into a predecessor's phrase was already named, so it keeps one beep instead
-    // of the three-stage cascade; every other corner starts at the top.
-    const int firstStage = (chained || spokenInChain) ? kChainedStage : 0;
-    const int fromStage = std::max(mApproachBeeps, firstStage);
-    const bool countdownDue = !landmarkThisTick && fromStage < kApproachStages &&
-                              toEntry > 0.0f && lead <= kApproachLeadSec[fromStage];
+    // Only the corner that OPENS a run counts down. A follower was already named inside the
+    // leader's phrase and keeps just its entry/apex/exit beeps, so the run reads as one continuous
+    // thing to drive rather than three overlapping warnings.
+    const int fromStage = mApproachBeeps;
+    const bool countdownDue = !chained && !spokenInChain && !landmarkThisTick &&
+                              fromStage < kApproachStages && toEntry > 0.0f &&
+                              lead <= kApproachLeadSec[fromStage];
     if (countdownDue) {
         // A crash or respawn can land the kart already inside every countdown window; playing the
         // whole cascade then crams three beeps into three frames (heard live on kinoko's curve
