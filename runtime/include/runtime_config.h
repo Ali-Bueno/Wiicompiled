@@ -52,6 +52,7 @@ struct RuntimeUserConfig {
     std::optional<int32_t> accessibilitySteeringStrength;
     std::optional<int32_t> accessibilitySteeringSensitivity;
     std::optional<int32_t> accessibilitySteeringLookAhead;
+    std::optional<int32_t> accessibilitySteeringPositionGain;
     std::optional<std::string> accessibilityLineSource;
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
@@ -275,6 +276,33 @@ inline void EnsureConfigFile() {
               "# A PAL disc carries English, French, German, Spanish and Italian.\n"
               "# Takes effect on the next launch: the game reads it once while booting.\n"
               "language = 1\n\n"
+              "[accessibility]\n"
+              "# Screen-reader narration and the blind driving assists. Everything in THIS\n"
+              "# section applies while the game is running: save the file and the mod says\n"
+              "# \"settings reloaded\" a couple of seconds later.\n"
+              "# The steering guide pans the game's own engine note towards the side to steer\n"
+              "# AWAY from. All four knobs are 0-100.\n"
+              "steering_strength = 27\n"
+              "steering_sensitivity = 50\n"
+              "steering_look_ahead = 57\n"
+              "# Cuanto inclina el motor el estar fuera de la linea, al cuadrado: casi plano en el\n"
+              "# centro y fuerte cerca del borde real de la pista. Mide donde VAS a estar un poco\n"
+              "# mas adelante, no donde estas: centro = vas camino de estar en la linea, y cruzarla\n"
+              "# con velocidad inclina el motor aunque ahora mismo estes centrado. 0 lo apaga.\n"
+              "steering_position_gain = 50\n"
+              "invert_steering_pan = false\n"
+              "# Which line the guide follows: \"item\" (the route red shells fly - the default,\n"
+              "# measured more centred on most courses) or \"cpu\" (the CPU drivers' route). The\n"
+              "# value is ALWAYS quoted.\n"
+              "line_source = \"item\"\n"
+              "# Beeps as the kart nears the edge of the road, and a held tone once it leaves it.\n"
+              "edge_cues = true\n"
+              "# Engine volume per kart, as a percentage of the game's own; 100 leaves the game\n"
+              "# untouched. Raise your own kart and lower the rivals to hear your own engine,\n"
+              "# which is what the steering guide speaks through.\n"
+              "kart_volume = 100\n"
+              "rival_kart_volume = 100\n"
+              "item_roulette_volume = 100\n\n"
               "[paths]\n"
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
@@ -413,6 +441,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigInt(document, "accessibility", "steering_sensitivity");
     config.accessibilitySteeringLookAhead =
         FindConfigInt(document, "accessibility", "steering_look_ahead");
+    config.accessibilitySteeringPositionGain =
+        FindConfigInt(document, "accessibility", "steering_position_gain");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
@@ -703,6 +733,12 @@ inline bool SetAccessibilitySteeringLookAhead(int32_t value) {
     return WriteSetting("accessibility", "steering_look_ahead", std::to_string(clamped));
 }
 
+inline bool SetAccessibilitySteeringPositionGain(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringPositionGain = clamped;
+    return WriteSetting("accessibility", "steering_position_gain", std::to_string(clamped));
+}
+
 inline bool SetAccessibilityEdgeCues(bool value) {
     Mutable().accessibilityEdgeCues = value;
     return WriteSetting("accessibility", "edge_cues", value ? "true" : "false");
@@ -808,8 +844,9 @@ inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
 
 // The three knobs that decide how the steering guide feels. All 0-100, all clamped, because the
 // right values are a matter of ear and of how fast the player drives - not something that can be
-// settled from the game's code.
-inline int32_t AccessibilitySteeringStrength(int32_t fallback = 60) {
+// settled from the game's code. Strength default: the player's ear pick, 2026-08-27 ("steering
+// guide strength lo dejas en 27").
+inline int32_t AccessibilitySteeringStrength(int32_t fallback = 27) {
     return std::clamp(Get().accessibilitySteeringStrength.value_or(fallback), 0, 100);
 }
 
@@ -819,9 +856,18 @@ inline int32_t AccessibilitySteeringSensitivity(int32_t fallback = 50) {
 
 // How far ahead the steering guide's pursuit point sits. Low keeps the pan present-tense ("tiene
 // que hacerlo dentro de la curva, no antes"); higher trades that for anticipation. Default is the
-// value the player settled on by ear in their first completed race.
-inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 15) {
+// value the player settled on by ear on the clamped-smoothing build, final sweep 2026-08-27
+// ("steering loock a head en 57").
+inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 57) {
     return std::clamp(Get().accessibilitySteeringLookAhead.value_or(fallback), 0, 100);
+}
+
+// How hard being off the line alone leans the engine, on top of the pursuit error - Top Speed's
+// own position term, squared, so the centre is nearly flat and the lean grows steeply towards the
+// real road edge. 50 reproduces Top Speed's ratio exactly (a quarter of full lean at the edge),
+// 100 doubles it, 0 leaves the pure pursuit guide the player already tuned.
+inline int32_t AccessibilitySteeringPositionGain(int32_t fallback = 50) {
+    return std::clamp(Get().accessibilitySteeringPositionGain.value_or(fallback), 0, 100);
 }
 
 // Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill

@@ -157,6 +157,14 @@ void SettingsMenu::BuildOptions() {
                  StepKnob(RuntimeConfigFile::AccessibilitySteeringLookAhead(), dir));
          },
          nullptr});
+    mOptions.push_back(
+        {"opt_position_gain",
+         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringPositionGain()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringPositionGain(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringPositionGain(), dir));
+         },
+         nullptr});
 
     const auto toggleInvert = [] {
         RuntimeConfigFile::SetAccessibilityInvertSteeringPan(

@@ -1,6 +1,8 @@
 #ifndef MKW_ACCESSIBILITY_RACE_DRIVE_ASSIST_H
 #define MKW_ACCESSIBILITY_RACE_DRIVE_ASSIST_H
 
+#include <vector>
+
 namespace a11y::race {
 
 struct RaceState;
@@ -46,6 +48,24 @@ public:
 private:
     void UpdateSteering(const RaceState& state, const CourseMap& map,
                         const Handedness& handedness, int station, float dtSec);
+    // What the position term worked out this frame. Kept together so the diagnostic can print the
+    // whole chain rather than just its answer - the last time this term shipped, the log said only
+    // what it produced and not what it was made of.
+    struct PositionLean {
+        float pan = 0.0f;        // absolute pan, independent of the guide's strength knob
+        float u = 0.0f;          // fraction of the real road the prediction spans
+        float lateral = 0.0f;    // units from the line now, signed to the track's right
+        float rate = 0.0f;       // units per second across the line - diagnostic only
+        float predicted = 0.0f;  // units from the line at the aim point, the value that is graded
+    };
+
+    // Top Speed's position term, in ABSOLUTE pan, graded on where the kart's heading is taking it
+    // rather than on where it is. `aimDistance` and `targetX/Z` are the pursuit term's own
+    // look-ahead and aim point, passed in so both terms are referenced to the same point on the
+    // road: the bearing to it, and the distance from it.
+    PositionLean PositionPan(const RaceState& state, const CourseMap& map,
+                             const Handedness& handedness, float arc, float aimDistance,
+                             float targetX, float targetZ) const;
     // One active curve drives every curve cue, as in MK64: the spoken call, the approach countdown
     // and the entry/apex/exit beeps all describe the same corner and change together.
     void UpdateCurveCues(const RaceState& state, const CourseMap& map, int station);
@@ -56,6 +76,14 @@ private:
     float mLastToward = 0.0f;
     float mLastBearingDeg = 0.0f;
     float mLastReachWidths = 0.0f;
+    // Which kPositionLogStep buckets the two leans last printed in, so the diagnostic follows real
+    // movement of EITHER of them - bucketing on the position term alone was blind to the very
+    // event it needed to show, a pursuit term swinging through zero against a steady position one.
+    int mLastPositionBucket = 0;
+    int mLastPursuitBucket = 0;
+    // Diagnostic only: the previous frame's lateral offset, so the log can separate the kart
+    // moving across the line from the line moving under the kart.
+    float mLastLateralUnits = 0.0f;
 
     int mLastLap = -1;
 
@@ -66,6 +94,16 @@ private:
     bool mAnnounced = false;
     // 0 before the entry, 1 past it, 2 past the apex, 3 past the exit.
     int mPhase = 0;
+    // The corner whose exit beep has already sounded, by entry station. It stays selectable for the
+    // rest of its clearance margin and its entry is the furthest behind, so it wins the selection
+    // back on the very next frame - which reset the counters, replayed its exit beep and re-spoke
+    // the next corner every other frame. Latched here, the handoff holds. One is enough: by the
+    // time the next corner finishes, this one is a whole corner behind.
+    int mFinishedEntry = -1;
+    // Corners already spoken inside a chained call ("left, then right"), by entry station. A
+    // follower on this list keeps its traversal beeps but is not re-announced; one past the
+    // kMaxChain cap is NOT on it, so it still gets a call of its own. Cleared each lap.
+    std::vector<int> mChainAnnounced;
 };
 
 // Menu preview: plays a representative corner-entry beep as a one-shot.

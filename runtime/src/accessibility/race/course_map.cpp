@@ -67,6 +67,10 @@ float CourseMap::HalfWidth(int i) const {
     return mPoints.empty() ? 0.0f : mPoints[Wrap(i)].halfWidth;
 }
 
+float CourseMap::Height(int i) const {
+    return mPoints.empty() ? 0.0f : mPoints[Wrap(i)].y;
+}
+
 float CourseMap::ArcAt(int i) const {
     return mArc.empty() ? 0.0f : mArc[Wrap(i)];
 }
@@ -94,6 +98,13 @@ void CourseMap::Forward(int i, float& x, float& z) const {
 void CourseMap::RightVector(int i, float& x, float& z) const {
     float fx, fz;
     Forward(i, fx, fz);
+    x = fz * mRightPerpSign;
+    z = -fx * mRightPerpSign;
+}
+
+void CourseMap::RightVectorAtArc(float arc, float& x, float& z) const {
+    float fx, fz;
+    ForwardAtArc(arc, fx, fz);
     x = fz * mRightPerpSign;
     z = -fx * mRightPerpSign;
 }
@@ -145,6 +156,8 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
     return mRouteBased;
 }
 
+// The positions arrive already smoothed - RouteGraph::Build does it once, on the way in, so the
+// stations and the lateral offset cannot drift onto two different lines.
 bool CourseMap::BuildRouteStations() {
     if (!mGraph.Loaded()) {
         return false;
@@ -156,6 +169,7 @@ bool CourseMap::BuildRouteStations() {
         Station station;
         station.x = point.x;
         station.z = point.z;
+        station.y = point.y;
         station.halfWidth = point.range * kCorridorPerRange;
         mPoints.push_back(station);
     }
@@ -311,6 +325,12 @@ float CourseMap::SignedTurnAt(int i) const {
     // mod shares.
     float rx, rz;
     RightVector(i, rx, rz);
+    // A station whose neighbours coincide - a hairpin taken in two stations - has no forward, so
+    // Forward leaves a null vector and its perpendicular is null too. Zero is the honest answer:
+    // falling through would grade every such corner as a right-hander on `sideChange >= 0`.
+    if (Hypot2(rx, rz) <= 0.0f) {
+        return 0.0f;
+    }
     const float sideChange = (bx * rx + bz * rz) - (ax * rx + az * rz);
 
     const float span = (aLen + bLen) * 0.5f;
@@ -376,6 +396,10 @@ bool CourseMap::SegmentForArc(float arc, int& station, float& t) const {
     station = n - 1;
     t = 1.0f;
     return true;
+}
+
+bool CourseMap::SegmentAtArc(float arc, int& station, float& t) const {
+    return SegmentForArc(arc, station, t);
 }
 
 void CourseMap::ForwardAtArc(float arc, float& x, float& z) const {

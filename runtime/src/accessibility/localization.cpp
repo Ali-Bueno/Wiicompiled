@@ -52,6 +52,7 @@ constexpr Phrase kEnglishDefaults[] = {
     {"finish_position", "finished {pos}"},
 
     {"off_road", "off road"},
+    {"off_road_fall", "off road, edge drop"},
     {"on_road", "on road"},
     {"wrong_way", "wrong way"},
 
@@ -67,6 +68,7 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_steering_strength", "steering guide strength"},
     {"opt_steering_sensitivity", "steering sensitivity"},
     {"opt_look_ahead", "steering look ahead"},
+    {"opt_position_gain", "off-line lean gain"},
     {"opt_invert_pan", "invert steering pan"},
     {"opt_edge_cues", "edge cues"},
     {"demo_edge", "hear the edge tone"},

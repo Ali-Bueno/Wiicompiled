@@ -97,7 +97,11 @@ void CourseMap::EmitCurve(int entry, int end) {
     }
 
     float peak = 0.0f;
-    float totalTurn = 0.0f;
+    // The run starts because the track already turns AT `entry`, and that turn is part of the
+    // corner: summing only from the next station cost a two-station corner half its arc, which
+    // could grade it under the minimum and drop it, or let its tail decide its side. Centre wraps,
+    // so the segment before station zero is the closing one rather than an out-of-range read.
+    float totalTurn = WrapAngle(SegmentHeading(entry) - SegmentHeading(entry - 1));
     for (int k = 0; k <= steps; ++k) {
         const int idx = Wrap(entry + k);
         peak = std::max(peak, TightnessAt(idx));

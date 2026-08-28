@@ -8,6 +8,11 @@
 namespace a11y::race {
 namespace {
 
+// How far the smoothing may move a point, as a fraction of that point's own corridor half-width.
+// Keeps the smoothed line inside the innermost quarter of the game's own AI corridor, so smoothing
+// can de-noise a dense route but can never relocate a coarse one off the road.
+constexpr float kSmoothingMaxCorridorFraction = 0.25f;
+
 // Squared distance from a point to a segment, and where along the segment the closest point fell.
 float SegmentDistanceSq(float px, float py, float pz, const RoutePoint& a, const RoutePoint& b,
                         float& tOut) {
@@ -43,10 +48,96 @@ const RoutePoint& RouteGraph::Point(int index) const {
 void RouteGraph::Build(std::vector<RoutePoint> points, std::uint8_t startPoint) {
     Clear();
     mPoints = std::move(points);
+    SmoothPositions();
     BuildLap(startPoint);
 
     RT_LOGF(RT_TAG_A11Y, "route graph: %d points, lap of %d\n", PointCount(),
             static_cast<int>(mLap.size()));
+}
+
+// A 3-tap moving average of each point with its neighbours. Measured offline over 4 courses and
+// both line sources: this alone beats a KCL-recentred line in 7 of 8 cases, and on Mushroom Gorge's
+// mushroom crossing it cuts the line's turn-per-arc to a third (ENPT 1.88->1.21, ITPT 2.72->1.30
+// deg per 1000 units) - the authored points carry per-point noise the road does not have.
+//
+// Over the successor links rather than over entry order, because the route branches: a point's
+// neighbours are the points it is joined to. Each side contributes one tap however many links it
+// has, so a junction is not dragged towards whichever branch happens to be busier, and a point
+// missing a side keeps its own position weighted accordingly instead of being pulled by the taps
+// it does not have.
+//
+// Horizontal only. The authored heights stay exactly as the game states them - that is what lets
+// LateralOffset use height to tell the two levels of a crossover apart - and so do the ranges, so
+// the corridor half-widths are untouched.
+void RouteGraph::SmoothPositions() {
+    const int n = PointCount();
+    if (n < kMinSmoothPoints) {
+        return;
+    }
+
+    std::vector<float> beforeX(n, 0.0f), beforeZ(n, 0.0f);
+    std::vector<int> beforeCount(n, 0);
+    for (int i = 0; i < n; ++i) {
+        const RoutePoint& point = mPoints[i];
+        for (std::uint8_t k = 0; k < point.nextCount && k < kMaxRouteLinks; ++k) {
+            const int j = point.next[k];
+            if (j >= n) {
+                continue;
+            }
+            beforeX[j] += point.x;
+            beforeZ[j] += point.z;
+            ++beforeCount[j];
+        }
+    }
+
+    std::vector<RoutePoint> smoothed(mPoints);
+    for (int i = 0; i < n; ++i) {
+        const RoutePoint& point = mPoints[i];
+        float sumX = point.x, sumZ = point.z;
+        int taps = 1;
+        if (beforeCount[i] > 0) {
+            sumX += beforeX[i] / static_cast<float>(beforeCount[i]);
+            sumZ += beforeZ[i] / static_cast<float>(beforeCount[i]);
+            ++taps;
+        }
+        float afterX = 0.0f, afterZ = 0.0f;
+        int afterCount = 0;
+        for (std::uint8_t k = 0; k < point.nextCount && k < kMaxRouteLinks; ++k) {
+            const int j = point.next[k];
+            if (j >= n) {
+                continue;
+            }
+            afterX += mPoints[j].x;
+            afterZ += mPoints[j].z;
+            ++afterCount;
+        }
+        if (afterCount > 0) {
+            sumX += afterX / static_cast<float>(afterCount);
+            sumZ += afterZ / static_cast<float>(afterCount);
+            ++taps;
+        }
+
+        // Clamped to a fraction of this point's OWN corridor, because an average moves a coarse
+        // route much further than a dense one. On Mushroom Gorge the ENPT points average 5028
+        // units apart against a 750-unit corridor half-width, and the unclamped average cut the
+        // first left-hander by 1300-3000 units - off the asphalt and inside the cliff for some
+        // 5100 units, where the raw authored points probe 100% road. Scaled rather than skipped,
+        // so the line stays continuous; per point, so a dense stretch still de-noises fully. A
+        // point with no stated range cannot say how far is safe, so it does not move at all.
+        float dx = sumX / static_cast<float>(taps) - point.x;
+        float dz = sumZ / static_cast<float>(taps) - point.z;
+        const float maxDisplacement =
+            point.range * kCorridorPerRange * kSmoothingMaxCorridorFraction;
+        const float displacement = std::sqrt(dx * dx + dz * dz);
+        if (displacement > maxDisplacement) {
+            const float scale = maxDisplacement / displacement;
+            dx *= scale;
+            dz *= scale;
+        }
+        smoothed[i].x = point.x + dx;
+        smoothed[i].z = point.z + dz;
+    }
+    mPoints.swap(smoothed);
 }
 
 // Follows the route from the grid's start point until it comes back on itself, and keeps the cycle.

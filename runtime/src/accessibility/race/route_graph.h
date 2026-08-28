@@ -20,6 +20,10 @@ namespace a11y::race {
 // twice its real length. Following the successor links the game itself computed walks the route.
 class RouteGraph {
 public:
+    // Takes the route in and smooths it once (SmoothPositions), so the lap stations, the steering
+    // target and the lateral offset below all measure against the same line. Two geometries meant
+    // the guide aimed at a corner-cut line while the offset was measured from the authored one, and
+    // a player who followed the guide read as drifting to the inside of every corner.
     void Build(std::vector<RoutePoint> points, std::uint8_t startPoint);
     void Clear();
 
@@ -48,8 +52,12 @@ public:
 private:
     // Below this a walk did not produce a lap and every query would be meaningless.
     static constexpr std::size_t kMinLapPoints = 4;
+    // A 3-tap average needs a point that can have a neighbour on each side.
+    static constexpr int kMinSmoothPoints = 3;
 
     void BuildLap(std::uint8_t startPoint);
+    // Applied once, by Build, so every consumer measures against one geometry.
+    void SmoothPositions();
 
     std::vector<RoutePoint> mPoints;
     std::vector<int> mLap;

@@ -8,9 +8,11 @@
 #include "accessibility/a11y_log.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/drive_assist.h"
+#include "accessibility/race/edge_map.h"
 #include "accessibility/race/engine_pan.h"
 #include "accessibility/race/heading.h"
 #include "accessibility/race/item_beacon.h"
+#include "accessibility/race/guest_read.h"
 #include "accessibility/race/kart_volume.h"
 #include "accessibility/race/kmp_reader.h"
 #include "accessibility/race/race_narrator.h"
@@ -40,23 +42,18 @@ int g_lastStation = -1;
 
 // Frames spent retrying a course whose routes read but did not close a sane lap. Early frames can
 // catch the KMP mid-life; past the window the checkpoint-ordered fallback is accepted (progress
-// and corner cues still work; the steering guide gates itself off RouteBased). ~10 s at 60 fps.
-constexpr int kRouteRetryFrames = 600;
+// and corner cues still work; the steering guide gates itself off RouteBased).
 int g_routeRetryFrames = 0;
 
 std::chrono::steady_clock::time_point g_lastTick;
 bool g_timing = false;
-float g_frameSec = 0.0f;
 
 // A paused game or a long load would otherwise arrive as one enormous time step and fire every
 // timed cue at once.
 constexpr float kMaxDtSec = 0.25f;
 
-// The frame duration is smoothed before anything divides by it. The game's speed is expressed per
-// frame, so converting it to a speed per second divides by this - and a single long frame would
-// otherwise read as the kart briefly crawling.
-constexpr float kFrameSmoothing = 0.1f;
-
+// Real elapsed time, which is what the cue timers run on - a beep interval is a wall-clock
+// interval. It is deliberately NOT what the kart's speed is converted with; see below.
 float StepSeconds() {
     const auto now = std::chrono::steady_clock::now();
     if (!g_timing) {
@@ -66,8 +63,29 @@ float StepSeconds() {
     }
     const float dt = std::min(std::chrono::duration<float>(now - g_lastTick).count(), kMaxDtSec);
     g_lastTick = now;
-    g_frameSec = g_frameSec > 0.0f ? g_frameSec + (dt - g_frameSec) * kFrameSmoothing : dt;
     return dt;
+}
+
+// How many game frames go by in a second. The kart's speed is units per GUEST frame and the guest
+// advances one frame per video retrace, so this - not the host's frame time - is what turns it
+// into units per second. Dividing by a measured frame duration tied every "seconds of lead"
+// threshold in the mod to the host: a stutter made the corner calls late and a fast presenter made
+// them early, while the kart drove exactly the same.
+//
+// Read from the VI HLE's own TV format global, which it writes into guest memory at every retrace
+// (runtime/src/hle/vi.cpp:139,227), and mapped by the interval that HLE picks for it
+// (IntervalForFormat, runtime/src/hle/vi.cpp:155-158): PAL 20000 us, everything else 16666 us.
+constexpr std::uint32_t kGuestViTvFormatAddr = 0x80386BA8;
+constexpr std::uint32_t kGuestViTvFormatPal = 1;
+constexpr float kGuestPalFramesPerSecond = 50.0f;
+constexpr float kGuestDefaultFramesPerSecond = 60.0f;
+
+float GuestFramesPerSecond() {
+    std::uint32_t format = 0;
+    if (Memory::TryRead32(kGuestViTvFormatAddr, format) && format == kGuestViTvFormatPal) {
+        return kGuestPalFramesPerSecond;
+    }
+    return kGuestDefaultFramesPerSecond;
 }
 
 void ForgetCourse() {
@@ -82,6 +100,7 @@ void ForgetCourse() {
     g_enginePan.Reset();
     g_kartVolume.Reset();
     g_rouletteVolume.Reset();
+    EdgeMap::Reset();
 }
 
 // Temporary. One line whenever the readable/driving state changes, so a silent race says which of
@@ -158,7 +177,6 @@ int ResolveStation(const RaceState& state) {
 void Reset() {
     g_courseSignature = 0;
     g_timing = false;
-    g_frameSec = 0.0f;
     ForgetCourse();
     ResetRaceState();
 }
@@ -207,7 +225,7 @@ void Tick() {
             } else if (g_map.Loaded()) {
                 // Neither source closed a sane lap. Retry for a while - early frames can catch
                 // the KMP mid-life - then accept the checkpoint-ordered fallback and say so.
-                if (++g_routeRetryFrames < kRouteRetryFrames) {
+                if (++g_routeRetryFrames < kCourseSettleFrames) {
                     g_map.Clear();
                 } else {
                     RT_LOGF(RT_TAG_A11Y,
@@ -218,9 +236,12 @@ void Tick() {
         }
     }
 
+    // The real road edges, measured a couple of stations per tick until the course is covered.
+    EdgeMap::Tick(g_map);
+
     const float dtSec = StepSeconds();
     RaceState& state = ReadRaceState();
-    state.speedPerSecond = g_frameSec > 0.0f ? state.speed / g_frameSec : 0.0f;
+    state.speedPerSecond = state.speed * GuestFramesPerSecond();
 
     LogStateChange(state);
 

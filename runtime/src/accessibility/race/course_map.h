@@ -51,6 +51,11 @@ public:
 
     void Centre(int i, float& x, float& z) const;
 
+    // The authored height of the route point this station came from. Never smoothed and never used
+    // for geometry - it is the height a vertical collision probe has to start from. Zero on the
+    // checkpoint fallback, which is why anything probing gates on RouteBased().
+    float Height(int i) const;
+
     // The game's own drivable corridor at this station.
     float HalfWidth(int i) const;
 
@@ -67,6 +72,10 @@ public:
     // index is right through crossovers but only checkpoint-coarse; this refines it so distance
     // cues do not jump by a whole checkpoint at a time.
     float ArcOfPosition(float x, float z, int hintStation) const;
+
+    // The station segment a continuous arc position falls in, and how far along it (0..1), so a
+    // caller with its own per-station table can blend it the way this class blends its own.
+    bool SegmentAtArc(float arc, int& station, float& t) const;
 
     // The line's direction at a continuous arc position, blended between the neighbouring
     // stations' forwards so a look-ahead sample moves smoothly instead of stepping per segment.
@@ -99,6 +108,11 @@ public:
     // The station's right-hand vector. Which perpendicular that is was settled once at build time
     // from a checkpoint's own left-to-right vector, so it is derived rather than assumed.
     void RightVector(int i, float& x, float& z) const;
+
+    // The same right-hand vector at a continuous arc position, off the blended forward there. It
+    // lives beside RightVector so the perpendicular is derived in one place: a caller that needs
+    // "across the line" at the kart's own arc must not rebuild it from ForwardAtArc itself.
+    void RightVectorAtArc(float arc, float& x, float& z) const;
 
     // +1 when "right" is (forward.z, -forward.x), -1 when it is the other perpendicular - the
     // world's chirality, settled from the checkpoint data. The kart lives in the same world, so
@@ -144,6 +158,8 @@ private:
     struct Station {
         float x = 0.0f, z = 0.0f;
         float halfWidth = 0.0f;
+        // Authored, never smoothed: only a collision probe reads it.
+        float y = 0.0f;
     };
 
     int Wrap(int i) const;
