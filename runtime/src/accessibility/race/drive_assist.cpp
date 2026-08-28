@@ -187,7 +187,12 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     const PositionLean lean =
         astern ? PositionLean{}
                : PositionPan(state, map, handedness, arc, aimDistance, targetX, targetZ);
-    const float pan = std::clamp(pursuitPan + lean.pan, -1.0f, 1.0f);
+    // The accent rides on BOTH terms, because the corner's difficulty is how little room it leaves:
+    // the same drift that is nothing on a long straight is most of the road in a hairpin, and the
+    // engine has to say so ("el motor tiene que acentuarse para decir cuan difícil es la curva").
+    // Both terms are zero when the kart is on the line pointing along it, so scaling them cannot
+    // move the centre - "cuando esté centrado pues tiene que ser una posición buena para ella".
+    const float pan = std::clamp(pursuitPan + accent * lean.pan, -1.0f, 1.0f);
     mSmoothedPan += (pan - mSmoothedPan) * alpha;
     mLastBearingDeg = bearing / kDegToRad;
     mLastReachWidths = aimWidths;
