@@ -63,6 +63,11 @@ struct EdgeMap {
                           EdgeKind& kind);
 
     static bool Ready();
+
+    // The course's real road half-width in world units, or 0 before the map completes. This is the
+    // length scale anything measured in "track widths" must use: the KMP corridor is the CPU
+    // drivers' lane, and on a custom course it can be a small fraction of the asphalt.
+    static float MedianHalfWidth();
 };
 
 }  // namespace a11y::race

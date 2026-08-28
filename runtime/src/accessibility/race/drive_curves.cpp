@@ -23,7 +23,7 @@ using audio::Waveform;
 // spoken phrase plus reaction time rather than just the phrase.
 constexpr float kCallLeadSec = 4.0f;
 constexpr float kApproachLeadSec[] = {2.5f, 1.4f, 0.7f};
-constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.5f};
+constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cpp:80
 constexpr int kApproachStages = 3;
 
 // Two corners are chained - "no real straight between them" - when the gap cannot fit the
@@ -40,15 +40,33 @@ constexpr int kMaxChain = 3;
 // to the next corner the moment this one's exit is crossed.
 constexpr float kClearStations = 1.5f;
 
-constexpr float kBeepHz = 660.0f;  // E5, well clear of the carrier
+// TWO cue families, which must never be mistaken for each other. They used to be the SAME sound -
+// one triangle, one 660 Hz base, the same three rising pitches - with only the pan between them,
+// which is nothing against a game that pans its own audio: "los has dejado sonando igual tanto
+// para la cuenta atrás cuanto para los anuncios de entrada medio y salida de curva y confunden".
+// Rebuilt on MK64's families, whose own comment states the rule: "Each cue family uses a distinct
+// timbre so they are easy to tell apart by ear (sine = smooth, square = hollow/buzzy, saw =
+// bright/harsh)" (MK64 AudioCueService.cpp:67-68).
+//
 // Raised from 0.45/0.07 after a play-test could not say for sure the beeps had sounded at all
-// against the game's full-volume audio.
+// against the game's full-volume audio. Deliberately ONE amplitude, not MK64's per-shape trim
+// (12000 sine against 8500 square): our SampleWaveform already equalises the four shapes for
+// perceived loudness (audio/waveform.h:8-9), so trimming again would push the square family under.
 constexpr float kBeepAmplitude = 0.6f;
-constexpr float kBeepSec = 0.1f;
-// Entry, apex and exit rise through the corner, so which of the three you are hearing is obvious
-// even when they come close together.
+
+// Approach: smooth sine, higher register, three RISING pitches - it sounds like a countdown.
+constexpr Waveform kApproachShape = Waveform::Sine;
+constexpr float kApproachHz = 700.0f;   // MK64 AudioCueService.cpp:166
+constexpr float kApproachSec = 0.081f;  // MK64's 2600 samples at 32 kHz
+
+// Traversal: hollow square, lower register, and entry and apex SHARE a pitch so that only the exit
+// rises - punctuation of where you ARE, not a count of what is coming. MK64 DriveAssist.cpp:90-93:
+// "entry and apex share a pitch, the exit is higher to mark the end".
+constexpr Waveform kCurveShape = Waveform::Square;
+constexpr float kCurveHz = 440.0f;   // MK64 AudioCueService.cpp:167
+constexpr float kCurveSec = 0.094f;  // MK64's 3000 samples at 32 kHz
 constexpr float kEntryPitch = 1.0f;
-constexpr float kApexPitch = 1.25f;
+constexpr float kApexPitch = 1.0f;
 constexpr float kExitPitch = 1.5f;
 // Beeps lean towards the OUTSIDE of the corner - the side being drifted into, the one to steer
 // away from - so they speak the same direction language as the engine pan and the edge cue:
@@ -81,14 +99,29 @@ std::string CurvePhrase(const Curve& curve) {
     return loc::Get(key);
 }
 
-CueSpec BeepSpec(float pitch, bool right) {
+// Centred, as in MK64: the countdown says *when*, not *where*. The direction is already in the
+// spoken call, and panning it would add a second thing to interpret for no gain.
+CueSpec ApproachBeep(int stage) {
     CueSpec spec;
-    spec.shape = Waveform::Triangle;
-    spec.frequencyHz = kBeepHz * pitch;
+    spec.shape = kApproachShape;
+    spec.frequencyHz = kApproachHz * kApproachPitch[stage];
+    spec.amplitude = kBeepAmplitude;
+    spec.pan = 0.0f;
+    spec.durationSec = kApproachSec;
+    return spec;
+}
+
+// Panned, unlike MK64, which centres both families. This mod's direction language is "the sound
+// marks the side to steer away from", shared with the engine pan and the edge cue - and keeping it
+// gives a THIRD axis of separation from the centred countdown, on top of timbre and register.
+CueSpec LandmarkBeep(float pitch, bool right) {
+    CueSpec spec;
+    spec.shape = kCurveShape;
+    spec.frequencyHz = kCurveHz * pitch;
     spec.amplitude = kBeepAmplitude;
     // A right-hand corner drifts the kart to the LEFT outside, so the beep sounds left.
     spec.pan = right ? -kBeepPan : kBeepPan;
-    spec.durationSec = kBeepSec;
+    spec.durationSec = kCurveSec;
     return spec;
 }
 
@@ -101,7 +134,7 @@ float LeadSeconds(float distance, float speed) {
 }  // namespace
 
 void PlayCurveCueDemo() {
-    CueSpec beep = BeepSpec(kEntryPitch, /*right=*/true);  // entry beep, the representative one
+    CueSpec beep = LandmarkBeep(kEntryPitch, /*right=*/true);  // entry beep, the representative one
     beep.pan = kDemoCurvePan;
     CueService::Instance().PlayOneShot(CueChannel::Curve, beep);
 }
@@ -136,28 +169,64 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
 
     if (active->entry != mActiveEntry) {
         mActiveEntry = active->entry;
-        mApproachBeeps = 0;
-        mAnnounced = false;
         mPhase = 0;
     }
 
+    // The countdown leads the corner AHEAD, never the one being described. ActiveCurveAt picks the
+    // smallest SIGNED toEntry, so a corner the kart is inside wins outright over anything coming:
+    // the follower of a pair could not begin counting until the leader's exit was behind it, which
+    // on a hairpin-then-hard-right is no warning at all - the beeps land with the corner already
+    // under way ("suena pero ya no me da tiempo a girar"). The chain veto below still silences a
+    // corner too close to be worth its own warning, so the two rules compose instead of one
+    // starving the other.
+    const Curve* upcoming = map.NextCurve(station);
+    if (upcoming == nullptr) {
+        upcoming = active;
+    }
+    if (upcoming->entry != mApproachEntry) {
+        mApproachEntry = upcoming->entry;
+        mApproachBeeps = 0;
+        mAnnounced = false;
+    }
+
     // Signed, so a corner already under way reads as behind rather than a lap ahead.
-    const float toEntry = map.ArcSignedTo(arc, active->entry);
+    const float toEntry = map.ArcSignedTo(arc, upcoming->entry);
     const float lead = LeadSeconds(toEntry, state.speedPerSecond);
 
     // A corner that follows the previous one with no real straight between was already announced
     // and counted down as part of that call, so it gets its own traversal beeps and nothing else.
     const float chainGap = state.speedPerSecond * kApproachLeadSec[kChainLeadStage];
-    const bool chained = map.IsChainFollower(*active, chainGap);
+    const bool chained = map.IsChainFollower(*upcoming, chainGap);
     // Spoken once: as its own call or inside a predecessor's chained phrase. The ledger also
     // vetoes the countdown - the gap is speed-relative, so a corner merged into a phrase at
     // approach speed must not "unchain" and count down just because the kart arrives slower.
     const bool spokenInChain =
-        std::find(mChainAnnounced.begin(), mChainAnnounced.end(), active->entry) !=
+        std::find(mChainAnnounced.begin(), mChainAnnounced.end(), upcoming->entry) !=
         mChainAnnounced.end();
 
-    if (!chained && !spokenInChain && mApproachBeeps < kApproachStages && toEntry > 0.0f &&
-        lead <= kApproachLeadSec[mApproachBeeps]) {
+    // Whether the kart is still driving the corner being described while a DIFFERENT corner is the
+    // one being counted down - the exact condition under which the two cue families overlap.
+    const bool insideCorner = active != upcoming && map.ArcSignedTo(arc, active->entry) <= 0.0f &&
+                              map.ArcSignedTo(arc, active->exit) > 0.0f;
+
+    const bool countdownDue = !chained && !spokenInChain && mApproachBeeps < kApproachStages &&
+                              toEntry > 0.0f && lead <= kApproachLeadSec[mApproachBeeps];
+    if (countdownDue && insideCorner) {
+        // Corners so close that the next one's countdown would sound over this one's traversal
+        // beeps. The player's rule: "las curvas están tan juntas que se mezcla la cuenta atrás de
+        // la próxima curva con el cue de curva actual. en ese caso ya debería contarse como curva
+        // seguida y no hacer el sonido de cuenta atrás, solo entrada barra medio barra salida".
+        //
+        // Consumed outright rather than deferred, so no stray beep lands at the exit either - the
+        // corner is treated exactly as a chained one and keeps only its traversal beeps.
+        //
+        // Tested at the instant a beep would have fired, which is why it needs no gap threshold of
+        // its own: it silences precisely the countdowns that would overlap, on any course and at
+        // any speed. Widening the static `chainGap` to the first approach stage was tried before
+        // and rejected - at 2.5 s it chained nearly every pair and muted countdowns everywhere
+        // (review #4) - so that calibration stays untouched.
+        mApproachBeeps = kApproachStages;
+    } else if (countdownDue) {
         // A crash or respawn can land the kart already inside every countdown window; playing the
         // whole cascade then crams three beeps into three frames (heard live on kinoko's curve
         // 10). Skip to the furthest stage already reached and play only that one - same rule the
@@ -166,16 +235,12 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         while (stage + 1 < kApproachStages && lead <= kApproachLeadSec[stage + 1]) {
             ++stage;
         }
-        // Centred, as in MK64: the countdown says *when*, not *where*. The direction is already in
-        // the spoken call, and panning it adds a second thing to interpret for no gain.
-        CueSpec beep = BeepSpec(kApproachPitch[stage], active->right);
-        beep.pan = 0.0f;
-        CueService::Instance().PlayOneShot(CueChannel::Curve, beep);
+        CueService::Instance().PlayOneShot(CueChannel::Curve, ApproachBeep(stage));
         mApproachBeeps = stage + 1;
         // A cue whose failure is silence gets a diagnostic (the play-test could not tell whether
         // these fired at all). Remove once the beeps are confirmed landing by ear.
         RT_LOGF(RT_TAG_A11Y, "curve countdown %d/%d: curve=%d toEntry=%.0f lead=%.1fs\n",
-                mApproachBeeps, kApproachStages, active->entry, static_cast<double>(toEntry),
+                mApproachBeeps, kApproachStages, upcoming->entry, static_cast<double>(toEntry),
                 static_cast<double>(lead));
     }
 
@@ -183,16 +248,21 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // and silencing it would drop a corner entirely (MK64 gates only the countdown on the chain).
     // `toEntry > 0`: the call is anticipation - a corner already under way (re-activated after a
     // crash or spin) must not be announced with a negative lead, which a real lap's log showed.
-    if (!mAnnounced && !spokenInChain && toEntry > 0.0f && lead <= kCallLeadSec) {
+    // Naming the NEXT corner while the kart is still in this one is what the countdown fix cost:
+    // "en el momento en que estoy haciendo una curva me dice otra y aveces confunde". The phrase
+    // waits for the exit. MK64 never speaks mid-corner either: a follower is folded into the
+    // predecessor's phrase, spoken before the pair.
+    if (!mAnnounced && !spokenInChain && !insideCorner && toEntry > 0.0f &&
+        lead <= kCallLeadSec) {
         mAnnounced = true;
-        std::string phrase = CurvePhrase(*active);
+        std::string phrase = CurvePhrase(*upcoming);
 
         // Walk forward while each next corner starts too soon after the last one ended to count as
         // a straight, so a chicane is heard as one shape instead of two late warnings.
-        const Curve* last = active;
+        const Curve* last = upcoming;
         for (int n = 1; n < kMaxChain; ++n) {
             const Curve* following = map.NextCurve(last->exit);
-            if (following == nullptr || following->entry == active->entry ||
+            if (following == nullptr || following->entry == upcoming->entry ||
                 map.ArcForward(last->exit, following->entry) > chainGap) {
                 break;
             }
@@ -207,7 +277,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         // Calls are seconds apart and each one is still useful, so they queue rather than cut.
         ScreenReader::Instance().Speak(phrase, /*interrupt=*/false);
         RT_LOGF(RT_TAG_A11Y, "curve call: \"%s\" curve=%d toEntry=%.0f lead=%.1fs\n",
-                phrase.c_str(), active->entry, static_cast<double>(toEntry),
+                phrase.c_str(), upcoming->entry, static_cast<double>(toEntry),
                 static_cast<double>(lead));
     }
 
@@ -230,7 +300,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         constexpr float kPhasePitch[] = {kEntryPitch, kEntryPitch, kApexPitch, kExitPitch};
         mPhase = reached;
         CueService::Instance().PlayOneShot(CueChannel::Curve,
-                                           BeepSpec(kPhasePitch[reached], active->right));
+                                           LandmarkBeep(kPhasePitch[reached], active->right));
         RT_LOGF(RT_TAG_A11Y, "curve beep phase=%d (1 entry, 2 apex, 3 exit): curve=%d arc=%.0f\n",
                 reached, active->entry, static_cast<double>(arc));
     }

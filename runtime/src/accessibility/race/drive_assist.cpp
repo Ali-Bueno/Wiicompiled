@@ -26,12 +26,26 @@ constexpr float kPanSmoothTauSec = 0.1f;
 // bearing the guide holds whichever side it already leans to until the kart rotates back.
 constexpr float kAsternRad = 150.0f * kDegToRad;
 
-// How far ahead the pursuit point sits, in units of the lap's median corridor half-width - the
-// course's own road scale, so a setting means the same thing on every course and on either line
-// source. `steering_look_ahead` sweeps the range: at 0 the aim is half a half-width out, pure
-// present tense; at 100 it is four, about a second of anticipation at racing speed.
+// How far ahead the pursuit point sits, as a TIME. Anticipation is what the player spends to hear
+// a cue, decide and move the stick, and that budget is in seconds, not in road lengths - so this
+// leads by seconds exactly as the corner calls already do (LeadSeconds, drive_curves.cpp).
+//
+// It was written as a distance in road widths, which silently shrinks the warning as the course
+// gets faster: a logged Retro Rewind session measured `steering_look_ahead = 15` buying 1333 units
+// on a 1300-unit half-width, against 6590 units/s at racing pace - 0.20 s, less than the time it
+// takes to react to a sound at all, and the top of the knob only reached 0.79 s.
+//
+// The range is that same widths range converted at that session's own racing speed, so a course
+// driven at vanilla pace keeps the feel it was tuned with and only a faster one changes:
+//   near  0.5 widths -> 0.5 * 1300 / 6590 = 0.10 s   ("pure present tense")
+//   far   4.0 widths -> 4.0 * 1300 / 6590 = 0.79 s   (the "about a second" the design always meant)
+constexpr float kAimNearSec = 0.10f;
+constexpr float kAimFarSec = 0.79f;
+
+// The floor, still on the course's road scale: a pure time horizon collapses onto the kart's own
+// nose at a standstill or after a spin - the exact "no anticipation at all" failure the road-width
+// fix just removed - and after a spin the aim point's side IS the recovery signal.
 constexpr float kAimNearWidths = 0.5f;
-constexpr float kAimFarWidths = 4.0f;
 
 // The bearing to the pursuit point that means full lean: MK64's play-tested 45 degrees, kept
 // because the consumer (an ear) is the same. `steering_sensitivity` sweeps a factor of two around
@@ -63,6 +77,7 @@ void DriveAssist::Reset() {
     mLastToward = 0.0f;
     mLastPositionBucket = 0;
     mLastPursuitBucket = 0;
+    mApproachEntry = -1;
     mLastLateralUnits = 0.0f;
     mLastLap = -1;
     mActiveEntry = -1;
@@ -97,14 +112,23 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                                  const Handedness& handedness, int station, float dtSec) {
     const float alpha = dtSec > 0.0f ? 1.0f - std::exp(-dtSec / kPanSmoothTauSec) : 0.0f;
 
-    // The aim distance rides on the median corridor half-width, the course's own road scale.
-    const float widthScale =
-        map.MedianHalfWidth() > 0.0f ? map.MedianHalfWidth() : map.MeanSpacing();
+    // The aim distance rides on the REAL road, the same width the position term grades against, so
+    // one setting means the same anticipation on every course. The KMP corridor is not a road
+    // width: on a Retro Rewind N64 course it measured 79 units against 1,100 of asphalt, which put
+    // the aim point under the kart's nose and left the guide with no anticipation at all.
+    const float realHalfWidth = EdgeMap::MedianHalfWidth();
+    const float kmpHalfWidth = map.MedianHalfWidth();
+    const float widthScale = realHalfWidth > 0.0f  ? realHalfWidth
+                             : kmpHalfWidth > 0.0f ? kmpHalfWidth
+                                                   : map.MeanSpacing();
     const float lookAhead = Fraction(RuntimeConfigFile::AccessibilitySteeringLookAhead());
-    const float aimWidths = kAimNearWidths + (kAimFarWidths - kAimNearWidths) * lookAhead;
+    const float aimSeconds = kAimNearSec + (kAimFarSec - kAimNearSec) * lookAhead;
+    // Magnitude: the speed carries the sign of travel, and reversing must still aim up the course.
+    const float speed = std::fabs(state.speedPerSecond);
     // One anticipation horizon for the whole guide: the pursuit term aims at the point this far
     // along the line, and the position term grades the offset it predicts at that same point.
-    const float aimDistance = aimWidths * widthScale;
+    const float aimDistance = std::max(kAimNearWidths * widthScale, aimSeconds * speed);
+    const float aimWidths = widthScale > 0.0f ? aimDistance / widthScale : 0.0f;
 
     const float arc = map.ArcOfPosition(state.x, state.z, station);
     float targetX = 0.0f, targetZ = 0.0f;

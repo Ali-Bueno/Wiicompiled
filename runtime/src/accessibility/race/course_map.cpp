@@ -134,9 +134,12 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
     float gameLap = 0.0f;
     if (ReadCourseLapLength(gameLap)) {
         const float ratio = mLapLength / gameLap;
-        RT_LOGF(RT_TAG_A11Y, "course map: %d stations, lap %.0f, game says %.0f (%.2fx)\n",
+        // The KMP half-width is what the aim distance scales by; the edge map logs the real road
+        // beside it, and the two only agree by accident. Temporary, with the other diagnostics.
+        RT_LOGF(RT_TAG_A11Y,
+                "course map: %d stations, lap %.0f, game says %.0f (%.2fx), kmp half-width %.0f\n",
                 StationCount(), static_cast<double>(mLapLength), static_cast<double>(gameLap),
-                static_cast<double>(ratio));
+                static_cast<double>(ratio), static_cast<double>(mMedianHalfWidth));
         lapSane = ratio >= kLapRatioMin && ratio <= kLapRatioMax;
         if (routeLap && !lapSane) {
             RT_LOGF(RT_TAG_A11Y,

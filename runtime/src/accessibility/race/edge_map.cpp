@@ -36,6 +36,9 @@ int g_cursor = 0;
 int g_frames = 0;
 int g_bothEdges = 0;
 int g_fallEdges = 0;
+// The course's real road scale, in world units. Anything measuring a length in track widths takes
+// it from here: the KMP corridor is the CPU lane, not the road, and the two can differ by 14x.
+float g_medianHalfWidth = 0.0f;
 // Temporary. The worst single tick the build cost, so the next lap says whether the amortised
 // probe is really invisible. Remove with the other cue diagnostics.
 double g_worstTickMs = 0.0;
@@ -84,15 +87,31 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out) {
     return out.leftValid && out.rightValid;
 }
 
+// Over every measured side rather than per station, so one blind side does not discard the other.
+void MeasureMedianHalfWidth() {
+    std::vector<float> sides;
+    sides.reserve(g_edges.size() * 2);
+    for (const StationEdges& e : g_edges) {
+        if (e.leftValid) { sides.push_back(e.leftDistance); }
+        if (e.rightValid) { sides.push_back(e.rightDistance); }
+    }
+    g_medianHalfWidth = 0.0f;
+    if (!sides.empty()) {
+        std::nth_element(sides.begin(), sides.begin() + sides.size() / 2, sides.end());
+        g_medianHalfWidth = sides[sides.size() / 2];
+    }
+}
+
 void LogSummary() {
     const int stations = static_cast<int>(g_edges.size());
     RT_LOGF(RT_TAG_A11Y,
             "edge map: %d stations, %d%% with both edges, %d%% fall-bounded, %d object meshes "
-            "(%d skipped: %d ptr, %d hdr), worst tick %.1f ms\n",
+            "(%d skipped: %d ptr, %d hdr), real half-width %.0f, worst tick %.1f ms\n",
             stations, stations > 0 ? g_bothEdges * 100 / stations : 0,
             stations > 0 ? g_fallEdges * 100 / stations : 0, KclObjects::Count(),
             KclObjects::SkippedCount(), KclObjects::SkippedPointerCount(),
-            KclObjects::SkippedHeaderCount(), g_worstTickMs);
+            KclObjects::SkippedHeaderCount(), static_cast<double>(g_medianHalfWidth),
+            g_worstTickMs);
     // Temporary. One row per station in the same columns and the same raw world units as the
     // offline reference table, so a lap's log diffs straight against it. Remove with the other cue
     // diagnostics once the onset fraction is calibrated.
@@ -128,6 +147,7 @@ void EdgeMap::Reset() {
     g_frames = 0;
     g_bothEdges = 0;
     g_fallEdges = 0;
+    g_medianHalfWidth = 0.0f;
     g_worstTickMs = 0.0;
     KclObjects::Forget();
     // The course mesh too: its header is cached against a controller pointer that a new course can
@@ -136,6 +156,8 @@ void EdgeMap::Reset() {
 }
 
 bool EdgeMap::Ready() { return g_edgeMapState == EdgeMapState::Done && !g_edges.empty(); }
+
+float EdgeMap::MedianHalfWidth() { return g_medianHalfWidth; }
 
 StationEdges EdgeMap::At(int station) {
     if (station < 0 || station >= static_cast<int>(g_edges.size())) {
@@ -227,6 +249,7 @@ void EdgeMap::Tick(const CourseMap& map) {
             .count());
     if (g_cursor >= map.StationCount()) {
         g_edgeMapState = EdgeMapState::Done;
+        MeasureMedianHalfWidth();
         LogSummary();
     }
 }

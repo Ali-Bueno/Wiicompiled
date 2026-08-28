@@ -90,6 +90,9 @@ private:
     // The corner currently being described, identified by its entry station. Every counter below
     // belongs to it and resets when it changes.
     int mActiveEntry = -1;
+    // The corner the countdown is leading, which is the one AHEAD and not the one being
+    // described - they differ whenever the kart is still inside the previous corner.
+    int mApproachEntry = -1;
     int mApproachBeeps = 0;
     bool mAnnounced = false;
     // 0 before the entry, 1 past it, 2 past the apex, 3 past the exit.
