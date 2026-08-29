@@ -2,6 +2,7 @@
 #define MKW_ACCESSIBILITY_RACE_EDGE_MAP_H
 
 #include <cstdint>
+#include <vector>
 
 namespace a11y::race {
 
@@ -29,6 +30,10 @@ struct StationEdges {
     float rightDistance = 0.0f;
     EdgeKind leftKind = EdgeKind::Unknown;
     EdgeKind rightKind = EdgeKind::Unknown;
+    // How far this station had to move, towards the track's right, to stand on asphalt at all -
+    // and the distances above are measured from where it landed, not from where it was authored.
+    // Zero on a station the route already put on the road, which is most of them.
+    float shift = 0.0f;
 
     bool Valid(bool right) const { return right ? rightValid : leftValid; }
     float Distance(bool right) const { return right ? rightDistance : leftDistance; }
@@ -63,6 +68,17 @@ struct EdgeMap {
                           EdgeKind& kind);
 
     static bool Ready();
+
+    // The per-station shift towards the track's right that puts the line back on the asphalt, in
+    // world units and in station order. Empty until the map completes. The course map applies it
+    // to its own geometry AND to the route it measures the lateral offset against, because those
+    // two must stay one line: aiming at one while grading position against the other is the bug
+    // that made a player following the guide read as drifting inside every corner.
+    static const std::vector<float>& Shifts();
+
+    // True when at least one station had to be moved - the course authored part of its line off
+    // the road, which is worth saying once rather than silently correcting.
+    static bool AnyShift();
 
     // The course's real road half-width in world units, or 0 before the map completes. This is the
     // length scale anything measured in "track widths" must use: the KMP corridor is the CPU

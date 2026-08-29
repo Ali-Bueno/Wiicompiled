@@ -70,6 +70,26 @@ constexpr int kPositionGainDefault = 50;
 // which is about the smallest step the ear places at all.
 constexpr float kPositionLogStep = 0.05f;
 
+// Forza's pan mapping is not linear in the bearing: it carries an exponent
+// (`assistpanningextent_curveexp`) and a ceiling (`assistpanningextent_maxextent`) - see
+// docs/forza-blind-driving-assist.md §2. The ceiling here is already `steering_strength`; this is
+// the exponent, and it exists because a logged race measured a 200-unit drift moving the pan 0.068
+// of 1.0 with the reachable maximum at 0.52 - nearly all the useful signal in the bottom few
+// percent of the range. An exponent BELOW one expands exactly that region.
+//
+// `steering_response = "squared"` was tried and rejected by ear; squared is this same knob on the
+// wrong side of 1, compressing the small errors further rather than opening them out.
+//
+// The same factor-of-two sweep `steering_sensitivity` uses, anchored so 50 is the linear mapping
+// the player already tuned: 100 is the square root, 0 the square.
+constexpr float kPanCurveAnchorExp = 1.0f;
+
+float PanCurveExponent() {
+    return kPanCurveAnchorExp *
+           std::pow(2.0f,
+                    1.0f - 2.0f * Fraction(RuntimeConfigFile::AccessibilitySteeringPanCurve()));
+}
+
 // How hard the corner at `arc` is, as a multiplier on the guide's lean: 1.0 on a straight, and a
 // corner's own `intensity` inside one (1.0 at the game's corner threshold, a little over 3 at a
 // hairpin). Read at the AIM POINT rather than at the kart, so the accent arrives and fades with
@@ -172,7 +192,12 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     const float accent =
         1.0f + Fraction(RuntimeConfigFile::AccessibilitySteeringCurveAccent()) *
                    (CurveAccentAt(map, arc + aimDistance) - 1.0f);
-    float toward = std::clamp(accent * bearing / fullLean, -1.0f, 1.0f);
+    // The response curve shapes the NORMALISED bearing, never the raw one, so it maps 0 to 0 and 1
+    // to 1: "on the line pointing along it" stays dead centre - the player's own definition of the
+    // cue - and full lean still means full lean. Only the distribution between the two moves.
+    const float normalised = std::clamp(accent * bearing / fullLean, -1.0f, 1.0f);
+    float toward =
+        std::copysign(std::pow(std::fabs(normalised), PanCurveExponent()), normalised);
     const bool astern = std::fabs(bearing) > kAsternRad;
     if (astern) {
         // The aim point is behind: its side is the recovery signal and nothing else may dilute it.
@@ -246,7 +271,8 @@ DriveAssist::PositionLean DriveAssist::PositionPan(const RaceState& state, const
     const int gainKnob = RuntimeConfigFile::AccessibilitySteeringPositionGain();
     float offset = 0.0f, corridor = 0.0f;
     if (gainKnob <= 0 ||
-        !map.RoadOffset(state.x, state.y, state.z, offset, nullptr, nullptr, &corridor)) {
+        !map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offset, nullptr, nullptr,
+                             &corridor)) {
         return out;
     }
     out.lateral = offset * corridor;

@@ -50,6 +50,7 @@ void CourseMap::Clear() {
     mRightPerpSign = 1.0f;
     mHintWindow = 2;
     mRouteBased = false;
+    mRoadShifted = false;
 }
 
 void CourseMap::Centre(int i, float& x, float& z) const {
@@ -502,10 +503,96 @@ int CourseMap::NearestStation(float x, float z, int hint) const {
     return best;
 }
 
-bool CourseMap::RoadOffset(float x, float y, float z, float& out, float* closestXOut,
-                           float* closestZOut, float* halfWidthOut) const {
-    return mGraph.LateralOffset(x, y, z, mRightPerpSign, out, closestXOut, closestZOut,
-                                halfWidthOut);
+bool CourseMap::RoadOffsetAtArc(float arc, float x, float y, float z, float& out,
+                                float* closestXOut, float* closestZOut,
+                                float* halfWidthOut) const {
+    out = 0.0f;
+    if (!mRouteBased) {
+        // No lap to measure against: the graph-wide search is all there is.
+        return mGraph.LateralOffset(x, y, z, mRightPerpSign, out, closestXOut, closestZOut,
+                                    halfWidthOut);
+    }
+    int station = 0;
+    float t = 0.0f;
+    float lineX = 0.0f, lineZ = 0.0f;
+    if (!SegmentForArc(arc, station, t) || !PointAtArc(arc, lineX, lineZ)) {
+        return false;
+    }
+    // Not `near`/`far`: both are macros in the Windows headers this translation unit pulls in.
+    const float widthHere = HalfWidth(station);
+    const float widthNext = HalfWidth(station + 1);
+    const float halfWidth = widthHere + (widthNext - widthHere) * t;
+    if (!(halfWidth > 0.0f)) {
+        return false;
+    }
+    float rightX = 0.0f, rightZ = 0.0f;
+    RightVectorAtArc(arc, rightX, rightZ);
+    if (closestXOut != nullptr) {
+        *closestXOut = lineX;
+    }
+    if (closestZOut != nullptr) {
+        *closestZOut = lineZ;
+    }
+    if (halfWidthOut != nullptr) {
+        *halfWidthOut = halfWidth;
+    }
+    out = ((x - lineX) * rightX + (z - lineZ) * rightZ) / halfWidth;
+    return true;
+}
+
+bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
+    const int n = StationCount();
+    if (mRoadShifted || !mRouteBased || static_cast<int>(shifts.size()) != n) {
+        return false;
+    }
+    mRoadShifted = true;  // one attempt per course, successful or not
+
+    // Averaged with its neighbours before anything moves. The shifts are zero on most stations, so
+    // this only does anything where a repaired stretch meets an untouched one - and that step is
+    // precisely what the curvature pass would otherwise read as a corner.
+    std::vector<float> smoothed(static_cast<std::size_t>(n), 0.0f);
+    int moved = 0;
+    for (int i = 0; i < n; ++i) {
+        smoothed[i] = (shifts[Wrap(i - 1)] + shifts[i] + shifts[Wrap(i + 1)]) / 3.0f;
+        if (smoothed[i] != 0.0f) {
+            ++moved;
+        }
+    }
+    if (moved == 0) {
+        return false;  // the whole line was already on the road
+    }
+
+    // Every right vector first: it is built from the neighbouring stations, so reading it while the
+    // stations are moving would measure each one against a half-corrected line.
+    std::vector<float> rightX(static_cast<std::size_t>(n), 0.0f);
+    std::vector<float> rightZ(static_cast<std::size_t>(n), 0.0f);
+    for (int i = 0; i < n; ++i) {
+        RightVector(i, rightX[i], rightZ[i]);
+    }
+
+    float worst = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const float dx = rightX[i] * smoothed[i];
+        const float dz = rightZ[i] * smoothed[i];
+        mPoints[i].x += dx;
+        mPoints[i].z += dz;
+        worst = std::max(worst, std::fabs(smoothed[i]));
+    }
+
+    // Arc, curvature and corners all descend from the positions, so they are rebuilt. The
+    // right-hand sign and the checkpoint mapping are NOT: the sign is the mod's one direction
+    // convention and re-voting it on a moved line could flip every panned cue mid-race.
+    BuildDerived();
+    for (int i = 0; i < n; ++i) {
+        mTurn[i] = SignedTurnAt(i);
+    }
+    BuildCurves();
+
+    RT_LOGF(RT_TAG_A11Y,
+            "course map: %d of %d stations were off the road, line repaired, worst shift %.0f, "
+            "lap %.0f\n",
+            moved, n, static_cast<double>(worst), static_cast<double>(mLapLength));
+    return true;
 }
 
 int CourseMap::StationAhead(int station, float distance) const {

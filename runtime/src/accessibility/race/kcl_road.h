@@ -71,6 +71,12 @@ struct KclRoad {
     // the edge to say what is actually there.
     static KclEdges ProbeEdges(float x, float y, float z, float rightX, float rightZ);
 
+    // The signed lateral distance from this point to the nearest Road, searching both ways out to
+    // `limit`. Zero when the point already stands on road. False when no road is within the limit,
+    // which is the caller's cue to leave the point exactly where the course authored it.
+    static bool FindRoad(float x, float y, float z, float rightX, float rightZ, float limit,
+                         float& shiftOut);
+
     // The vertical reach of an unanchored probe, which is also the drop that counts as a fall.
     static float ProbeReach();
 };

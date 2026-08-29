@@ -28,7 +28,10 @@ inline constexpr int kMaxRouteLinks = 6;
 // actually drive.
 struct RoutePoint {
     float x = 0.0f, y = 0.0f, z = 0.0f;
-    float range = 0.0f;  // the game's own corridor half-width is 50 times this
+    // The game's own corridor half-width is 50 times this. Always ENPT's value, even for a point
+    // that came from ReadCourseItemRoute - ITPT's own field at the same struct offset means
+    // something else entirely (docs/mkwii-track-format.md).
+    float range = 0.0f;
     std::uint8_t next[kMaxRouteLinks] = {};
     std::uint8_t nextCount = 0;
 };
@@ -61,6 +64,11 @@ bool ReadCourseRoute(std::vector<RoutePoint>& out);
 // Reads the item route (KMP ITPT) the same way - the line shells and Bullet Bill follow. Offline
 // it measured more central and smoother than the CPUs' route on most courses, which is why it is
 // the guide's preferred backbone.
+//
+// Also reads ENPT internally, purely to fill in each point's `range`: ITPT's own field at that
+// struct offset is not a corridor width (docs/mkwii-track-format.md), so the width has nowhere
+// else to come from. Fails if ENPT does not read either, since then the route would have no width
+// at all - the caller already falls back to the CPU/ENPT route in that case.
 bool ReadCourseItemRoute(std::vector<RoutePoint>& out);
 
 // The lap length the game itself computed from the checkpoint midpoints, cached on the CKPT

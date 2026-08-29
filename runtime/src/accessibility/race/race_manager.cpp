@@ -142,9 +142,9 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
     float rightX = 0.0f, rightZ = 0.0f;
     map.RightVector(station, rightX, rightZ);
     const float alignment = state.forwardX * trackX + state.forwardZ * trackZ;
-    float lateral = 0.0f;
-    const bool haveLateral = map.RoadOffset(state.x, state.y, state.z, lateral);
     const float arc = map.ArcOfPosition(state.x, state.z, station);
+    float lateral = 0.0f;
+    const bool haveLateral = map.RoadOffsetAtArc(arc, state.x, state.y, state.z, lateral);
 
     RT_LOGF(RT_TAG_A11Y,
             "telemetry: cp=%d arc=%.0f kartfwd=(%.2f,%.2f) trackfwd=(%.2f,%.2f) "
@@ -238,6 +238,11 @@ void Tick() {
 
     // The real road edges, measured a couple of stations per tick until the course is covered.
     EdgeMap::Tick(g_map);
+    // And once they are, the line is stood back on the asphalt wherever the course authored it off
+    // the road - the item route follows what shells fly over, not what a kart can drive.
+    if (EdgeMap::Ready() && !g_map.RoadShifted()) {
+        g_map.ApplyRoadShift(EdgeMap::Shifts());
+    }
 
     const float dtSec = StepSeconds();
     RaceState& state = ReadRaceState();

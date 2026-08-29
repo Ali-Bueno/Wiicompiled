@@ -39,6 +39,9 @@ int g_fallEdges = 0;
 // The course's real road scale, in world units. Anything measuring a length in track widths takes
 // it from here: the KMP corridor is the CPU lane, not the road, and the two can differ by 14x.
 float g_medianHalfWidth = 0.0f;
+// Per station, towards the track's right: what it took to stand the line on asphalt. Mostly zero.
+std::vector<float> g_shifts;
+int g_shiftedStations = 0;
 // Temporary. The worst single tick the build cost, so the next lap says whether the amortised
 // probe is really invisible. Remove with the other cue diagnostics.
 double g_worstTickMs = 0.0;
@@ -72,7 +75,21 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out) {
     float cx = 0.0f, cz = 0.0f, rx = 0.0f, rz = 0.0f;
     map.Centre(station, cx, cz);
     map.RightVector(station, rx, rz);
-    const KclEdges edges = KclRoad::ProbeEdges(cx, map.Height(station), cz, rx, rz);
+    const float y = map.Height(station);
+
+    // A route point can be authored off the asphalt - the item route follows what shells fly over,
+    // and an ENPT stretch marked "only enter with an offroad-cutting item" is off the road on
+    // purpose. The lateral sweep below starts one step OUT, so it never notices: it just returns a
+    // zero-length road, the station is discarded, and the position term goes silent exactly where
+    // the player most needs to hear that they are off the track. So the probe walks to the asphalt
+    // first and measures from there.
+    //
+    // Bounded by the station's own KMP corridor: that is the game's own statement of how far the
+    // line may legitimately sit from this point, so a correction inside it is still the route,
+    // while a station needing more than that is a bad measurement rather than a bad line.
+    float shift = 0.0f;
+    KclRoad::FindRoad(cx, y, cz, rx, rz, map.HalfWidth(station), shift);
+    const KclEdges edges = KclRoad::ProbeEdges(cx + rx * shift, y, cz + rz * shift, rx, rz);
     if (!edges.valid) {
         return false;
     }
@@ -80,11 +97,35 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out) {
     out.rightKind = ClassifyEdge(edges.right);
     out.leftDistance = edges.left.distance;
     out.rightDistance = edges.right.distance;
+    // Centred only on a station that had to be moved. Where the route already stands on asphalt it
+    // is left exactly as authored: the 3-tap smoothing beat a KCL-recentred line on 7 of 8 offline
+    // courses (route_graph.cpp), and this is a repair, not a re-authoring. The edges follow the
+    // move analytically rather than by a second sweep - between two measured boundaries the road
+    // is the straight line the whole module already treats it as.
+    if (shift != 0.0f && out.leftDistance > 0.0f && out.rightDistance > 0.0f) {
+        const float toCentre = (out.rightDistance - out.leftDistance) * 0.5f;
+        out.leftDistance += toCentre;
+        out.rightDistance -= toCentre;
+        shift += toCentre;
+    }
+    out.shift = shift;
     // Each side stands on its own: a line point hard against one boundary still measured the other
     // correctly, and that is the side the player is about to need.
     out.leftValid = out.leftDistance >= kEdgeMapMinDistance;
     out.rightValid = out.rightDistance >= kEdgeMapMinDistance;
     return out.leftValid && out.rightValid;
+}
+
+// Gathered once the sweep is complete, in station order, for the course map to apply.
+void CollectShifts() {
+    g_shifts.assign(g_edges.size(), 0.0f);
+    g_shiftedStations = 0;
+    for (std::size_t i = 0; i < g_edges.size(); ++i) {
+        g_shifts[i] = g_edges[i].shift;
+        if (g_edges[i].shift != 0.0f) {
+            ++g_shiftedStations;
+        }
+    }
 }
 
 // Over every measured side rather than per station, so one blind side does not discard the other.
@@ -105,10 +146,10 @@ void MeasureMedianHalfWidth() {
 void LogSummary() {
     const int stations = static_cast<int>(g_edges.size());
     RT_LOGF(RT_TAG_A11Y,
-            "edge map: %d stations, %d%% with both edges, %d%% fall-bounded, %d object meshes "
+            "edge map: %d stations, %d%% with both edges, %d%% fall-bounded, %d line stations repaired, %d object meshes "
             "(%d skipped: %d ptr, %d hdr), real half-width %.0f, worst tick %.1f ms\n",
             stations, stations > 0 ? g_bothEdges * 100 / stations : 0,
-            stations > 0 ? g_fallEdges * 100 / stations : 0, KclObjects::Count(),
+            stations > 0 ? g_fallEdges * 100 / stations : 0, g_shiftedStations, KclObjects::Count(),
             KclObjects::SkippedCount(), KclObjects::SkippedPointerCount(),
             KclObjects::SkippedHeaderCount(), static_cast<double>(g_medianHalfWidth),
             g_worstTickMs);
@@ -149,6 +190,8 @@ void EdgeMap::Reset() {
     g_fallEdges = 0;
     g_medianHalfWidth = 0.0f;
     g_worstTickMs = 0.0;
+    g_shifts.clear();
+    g_shiftedStations = 0;
     KclObjects::Forget();
     // The course mesh too: its header is cached against a controller pointer that a new course can
     // land on again, and this is the one place that knows the course is gone.
@@ -158,6 +201,10 @@ void EdgeMap::Reset() {
 bool EdgeMap::Ready() { return g_edgeMapState == EdgeMapState::Done && !g_edges.empty(); }
 
 float EdgeMap::MedianHalfWidth() { return g_medianHalfWidth; }
+
+const std::vector<float>& EdgeMap::Shifts() { return g_shifts; }
+
+bool EdgeMap::AnyShift() { return g_shiftedStations > 0; }
 
 StationEdges EdgeMap::At(int station) {
     if (station < 0 || station >= static_cast<int>(g_edges.size())) {
@@ -249,6 +296,7 @@ void EdgeMap::Tick(const CourseMap& map) {
             .count());
     if (g_cursor >= map.StationCount()) {
         g_edgeMapState = EdgeMapState::Done;
+        CollectShifts();
         MeasureMedianHalfWidth();
         LogSummary();
     }

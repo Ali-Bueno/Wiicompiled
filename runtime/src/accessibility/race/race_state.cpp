@@ -42,6 +42,9 @@ constexpr std::uint32_t kMovementSpeed = 0x20;  // Kart::Link::GetEngineSpeed (0
 constexpr std::uint32_t kMovementHeading = 0x74;
 constexpr std::uint32_t kMovementSpeedRatio = 0xB0;  // Kart::Link::GetSpeedRatioCapped (0x80590DC0)
 constexpr std::uint32_t kMovementOffroad = 0xB8;     // Kart::Movement::UpdateOffroad (0x8057C3D4)
+// u16, same function: floorCollisionCount, the wheel-contact count UpdateOffroad checks before it
+// touches kMovementOffroad at all - with none in contact it returns early and never writes it.
+constexpr std::uint32_t kMovementFloorCollisionCount = 0xC8;
 
 // The body matrix is row-major 3x4, so a column is three floats a row apart.
 constexpr std::uint32_t kMatrixRowBytes = 16;
@@ -54,6 +57,10 @@ constexpr std::uint32_t kMatrixForwardColumn = 2;
 constexpr float kOnRoadMultiplier = 1.0f;
 
 RaceState g_state;
+
+// Survives across frames on purpose: ReadRaceState resets g_state to RaceState{} on every call, so
+// the last-known-on-ground surface has nowhere else to live while the kart is airborne.
+bool g_lastGroundOffRoad = false;
 
 // The kart the human is driving. Scanned every frame rather than cached: the count is small, and a
 // cached index would go stale across a restart in a way that is silent and hard to notice.
@@ -139,6 +146,7 @@ int ReadKartObjects(std::uint32_t* out, int maxCount) {
 
 void ResetRaceState() {
     g_state = RaceState{};
+    g_lastGroundOffRoad = false;
 }
 
 RaceState& ReadRaceState() {
@@ -169,10 +177,20 @@ RaceState& ReadRaceState() {
 
     TryFloat(movement + kMovementSpeedRatio, g_state.speedRatio);
 
-    float offroad = kOnRoadMultiplier;
-    if (TryFloat(movement + kMovementOffroad, offroad)) {
-        g_state.offRoad = offroad < kOnRoadMultiplier;
+    std::uint16_t floorCollisionCount = 0;
+    g_state.onGround = TryU16(movement + kMovementFloorCollisionCount, /*highHalf=*/true,
+                              floorCollisionCount) &&
+                       floorCollisionCount > 0;
+
+    // Only decode the surface multiplier while grounded: UpdateOffroad leaves it untouched in the
+    // air, so decoding it there would just replay the last surface the kart actually touched.
+    if (g_state.onGround) {
+        float offroad = kOnRoadMultiplier;
+        if (TryFloat(movement + kMovementOffroad, offroad)) {
+            g_lastGroundOffRoad = offroad < kOnRoadMultiplier;
+        }
     }
+    g_state.offRoad = g_lastGroundOffRoad;
 
     std::uint32_t hitboxGroup = 0;
     if (TryPointer(holder + kHolderHitboxGroup, hitboxGroup)) {

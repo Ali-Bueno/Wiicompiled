@@ -51,6 +51,20 @@ public:
 
     int StationCount() const { return static_cast<int>(mPoints.size()); }
 
+    // Moves each station sideways by `shifts[i]` world units towards the track's right, to stand
+    // the line on the asphalt where the course authored it off the road. Only the stations move:
+    // RoadOffsetAtArc measures against them too, so the guide's target and the offset's zero are
+    // one line by construction - centre pan has to keep meaning "you are on the line", which is
+    // the player's own definition of the cue.
+    //
+    // A repair, not a re-authoring: a station the route already put on the road gets a zero shift
+    // and does not move. Smoothed across neighbours first, because a step in the line reads as a
+    // corner to the curvature pass and would have the mod calling turns that are not there.
+    //
+    // Only on a route-based map, and only once - the caller gates on RoadShifted().
+    bool ApplyRoadShift(const std::vector<float>& shifts);
+    bool RoadShifted() const { return mRoadShifted; }
+
     // The station the game's checkpoint index corresponds to, or -1 when out of range.
     int StationForCheckpoint(int checkpoint) const;
 
@@ -99,8 +113,20 @@ public:
     // cue that says "centred" while the kart is on the grass is worse than no cue at all.
     // `closestX/Z`, when asked for, are the point on the line the offset was measured to, and
     // `halfWidth` the corridor half-width it was normalized by.
-    bool RoadOffset(float x, float y, float z, float& out, float* closestXOut = nullptr,
-                    float* closestZOut = nullptr, float* halfWidthOut = nullptr) const;
+    //
+    // Measured against the LAP at `arc` - the very line the steering guide aims at. It used to be
+    // measured against the nearest segment of the whole route graph, branches included, and on a
+    // branching course that alternated between two neighbouring branches frame by frame: a logged
+    // Toad's Factory race jumped the offset by 1958, -1768 and 1251 units in single frames at a
+    // speed of 63 units per frame, each with the pursuit term barely moving. The two halves of the
+    // pan were describing two different lines. One reference keeps "centre pan means you are on
+    // the line" true, which is the player's own definition of the cue.
+    //
+    // The graph-wide search remains the fallback for a map that never closed a lap, where there
+    // are no route stations to measure against.
+    bool RoadOffsetAtArc(float arc, float x, float y, float z, float& out,
+                         float* closestXOut = nullptr, float* closestZOut = nullptr,
+                         float* halfWidthOut = nullptr) const;
 
     // The lap's median corridor half-width - the stable length scale for "how far across the
     // road", where the per-station corridor is the CPU's lane discipline and can narrow without
@@ -192,6 +218,7 @@ private:
     float mMeanSpacing = 0.0f;
     float mMedianHalfWidth = 0.0f;
     bool mRouteBased = false;
+    bool mRoadShifted = false;
     // +1 when the right-hand vector is (forward.z, -forward.x), -1 when it is the other one.
     float mRightPerpSign = 1.0f;
     // How far ArcOfPosition searches either side of its hint, in stations - one more than the

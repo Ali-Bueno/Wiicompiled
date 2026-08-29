@@ -45,6 +45,13 @@ struct RaceState {
     float completion = 0.0f;
 
     std::uint32_t floorFlags = 0;
+    // Whether at least one wheel is touching a floor collider this frame. `offRoad` below only
+    // updates while this is true - Kart::Movement::UpdateOffroad skips writing the surface
+    // multiplier entirely while airborne, so a surface-based cue must gate on this too.
+    bool onGround = false;
+    // The last surface read while `onGround` was true. Holds its value across airborne frames
+    // rather than following whatever `offRoad` would decode to in the air, deliberately: nothing
+    // wrote a fresh value there, so decoding it would just be re-reporting the last touchdown.
     bool offRoad = false;
     // The game's own wrong-way flag, not a guess from our course direction. An earlier home-grown
     // version announced continuously while the player was driving correctly.

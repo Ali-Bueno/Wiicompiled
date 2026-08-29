@@ -113,6 +113,41 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ) {
 
 float KclRoad::ProbeReach() { return kEdgeProbeReachUnits; }
 
+// Searched from the line outwards in both directions at once, nearest first, so a point that sits
+// just off the asphalt is pulled to the side it actually left. The vertical window is the probe
+// reach, which is already the definition of "further down than a shoulder the player can recover
+// from": road further from the line than that is another deck, not this one.
+bool KclRoad::FindRoad(float x, float y, float z, float rightX, float rightZ, float limit,
+                       float& shiftOut) {
+    shiftOut = 0.0f;
+    if (!Ready()) {
+        return false;
+    }
+    const float length = std::sqrt(rightX * rightX + rightZ * rightZ);
+    if (!(length > 0.0f) || !(limit > 0.0f)) {
+        return false;
+    }
+    const float dirX = rightX / length;
+    const float dirZ = rightZ / length;
+
+    if (ProbeFloorNear(x, z, y, kEdgeProbeReachUnits).category == KclSurface::Road) {
+        return true;  // already on the asphalt: the authored point stands
+    }
+    const int steps = static_cast<int>(limit / kKclLateralStepUnits);
+    for (int i = 1; i <= steps; ++i) {
+        const float distance = kKclLateralStepUnits * static_cast<float>(i);
+        for (const float sign : {1.0f, -1.0f}) {
+            const float px = x + dirX * distance * sign;
+            const float pz = z + dirZ * distance * sign;
+            if (ProbeFloorNear(px, pz, y, kEdgeProbeReachUnits).category == KclSurface::Road) {
+                shiftOut = distance * sign;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float rightZ) {
     KclEdges out;
     if (!Ready()) {

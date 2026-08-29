@@ -50,7 +50,10 @@ constexpr std::uint32_t kEnptRange = 0x0C;
 // heap arrays - prev at +0x04, next at +0x0A, counts at +0x10/+0x11. Proof: the holder's own
 // InitLinks (0x80517E88, no allocator calls, prefills 12 bytes at +0x04 with 0xFF) and the
 // GetNextITPT/GetNextITPTCount accessors (0x805181F0 reads holder+0x0A+i, 0x80518268 reads
-// holder+0x11). The raw ITPT entry shares the ENPT prefix: position, then the corridor float.
+// holder+0x11). The raw ITPT entry shares the ENPT prefix layout - position, then a float at
+// +0x0C - but NOT its meaning: for ITPT that float is the Bullet Bill control range, not a
+// corridor width (KMP File Format, wiki.tockdom.com/wiki/KMP_(File_Format)#ITPT). See the ITPT
+// parse below: that field is deliberately never read into RoutePoint.range.
 constexpr std::uint32_t kManagerItptSection = 0x18;
 constexpr std::uint32_t kItptHolderRawEntry = 0x00;
 constexpr std::uint32_t kItptHolderNextInline = 0x0A;
@@ -71,6 +74,29 @@ constexpr std::uint8_t kNoRouteLink = 0xFF;
 // A course with more checkpoints than this is not a course; the read is bounded so a bad pointer
 // cannot spin the frame tick.
 constexpr std::uint32_t kMaxCheckpoints = 1024;
+
+// RoutePoint.range must always mean the ENPT corridor half-width (route_graph.h kCorridorPerRange),
+// because ENPT is the only one of the two point sets whose +0x0C field is a corridor at all - see
+// the ITPT section comment above. This assigns each item-route point the range of its nearest ENPT
+// point in the horizontal plane; the two point sets are not the same points and the game states no
+// explicit correspondence between them, so nearest position is the only link available.
+void ApplyEnptCorridorWidths(std::vector<RoutePoint>& itptRoute,
+                             const std::vector<RoutePoint>& enptSamples) {
+    for (RoutePoint& point : itptRoute) {
+        std::size_t nearest = 0;
+        float nearestDistSq = -1.0f;
+        for (std::size_t i = 0; i < enptSamples.size(); ++i) {
+            const float dx = point.x - enptSamples[i].x;
+            const float dz = point.z - enptSamples[i].z;
+            const float distSq = dx * dx + dz * dz;
+            if (nearestDistSq < 0.0f || distSq < nearestDistSq) {
+                nearestDistSq = distSq;
+                nearest = i;
+            }
+        }
+        point.range = enptSamples[nearest].range;
+    }
+}
 
 }  // namespace
 
@@ -173,9 +199,12 @@ bool ReadCourseItemRoute(std::vector<RoutePoint>& out) {
             out.clear();
             return false;
         }
+        // point.range is deliberately not read from `raw + kEnptRange` here: for ITPT that offset
+        // is the Bullet Bill control range, not a corridor width (see the section comment above).
+        // It is filled in from ENPT below instead, once the whole item route is read.
         RoutePoint point;
         if (!TryFloat(raw + kEnptX, point.x) || !TryFloat(raw + kEnptY, point.y) ||
-            !TryFloat(raw + kEnptZ, point.z) || !TryFloat(raw + kEnptRange, point.range)) {
+            !TryFloat(raw + kEnptZ, point.z)) {
             out.clear();
             return false;
         }
@@ -196,6 +225,18 @@ bool ReadCourseItemRoute(std::vector<RoutePoint>& out) {
         }
         out.push_back(point);
     }
+
+    // The item route supplies the line's geometry, never its width: every point's range comes
+    // from the nearest ENPT point instead (ApplyEnptCorridorWidths). If ENPT itself does not read,
+    // the item route cannot state a width either, so this fails outright and the caller's existing
+    // fallback (race_manager.cpp Tick()) picks the CPU/ENPT route - the same route ENPT would have
+    // supplied here anyway.
+    std::vector<RoutePoint> enptSamples;
+    if (!ReadCourseRoute(enptSamples)) {
+        out.clear();
+        return false;
+    }
+    ApplyEnptCorridorWidths(out, enptSamples);
 
     RT_LOGF(RT_TAG_A11Y, "course route: %u item route points read\n",
             static_cast<unsigned>(count));

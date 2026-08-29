@@ -156,10 +156,13 @@ bool TrackLimits::PannedSideIsRight(bool towardsRight, bool haveOffset, float dt
 
 void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
                              const Handedness& handedness, int station, float dtSec) {
+    // The kart's continuous arc, resolved once: it anchors the lateral offset AND the edge
+    // lookup below, so both describe the same point on the same line.
+    const float arc = map.ArcOfPosition(state.x, state.z, station);
     float offset = 0.0f;
     float nearX = 0.0f, nearZ = 0.0f, corridor = 0.0f;
     const bool haveOffset =
-        map.RoadOffset(state.x, state.y, state.z, offset, &nearX, &nearZ, &corridor);
+        map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offset, &nearX, &nearZ, &corridor);
 
     // Which EAR the danger is in, in the kart's own frame - the same derivation the steering
     // guide uses, through the same Handedness object. Taking the sign from the route frame
@@ -175,7 +178,6 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // pointed, so it takes the route frame's own sign while the ear above keeps the kart's. Read
     // at the kart's continuous arc, not at its station: a stepped edge distance would jump the
     // onset and the grade every time a station boundary went by.
-    const float arc = map.ArcOfPosition(state.x, state.z, station);
     float realDistance = 0.0f;
     EdgeKind kind = EdgeKind::Unknown;
     const bool haveReal =
@@ -186,7 +188,12 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // authority on that - the AI corridor is narrower than the road, so holding the tone on
     // geometry alone made it sound on nearly every sample of a play-test. Panned to the danger
     // side, the same ear the engine leans to under the player's steer-away convention.
-    if (SurfaceSaysOffRoad(state.offRoad, dtSec)) {
+    //
+    // `state.offRoad` alone is not enough: UpdateOffroad stops writing it while airborne, so it
+    // keeps reporting the last surface the kart touched. Gated on `onGround` here rather than left
+    // for the debounce alone to absorb, since a real jump can clear it; the debounce below still
+    // does its job for a bump too brief to register as a real air phase.
+    if (SurfaceSaysOffRoad(state.offRoad && state.onGround, dtSec)) {
         CueSpec tone;
         tone.shape = KindIsFall(mNearEdgeKind) ? Waveform::Saw : Waveform::Triangle;
         tone.frequencyHz =
