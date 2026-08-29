@@ -68,6 +68,8 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_steering_strength", "steering guide strength"},
     {"opt_steering_sensitivity", "steering sensitivity"},
     {"opt_look_ahead", "steering look ahead"},
+    {"opt_pan_curve", "pan response curve"},
+    {"opt_curve_look_ahead", "curve cue anticipation"},
     {"opt_position_gain", "off-line lean gain"},
     {"opt_invert_pan", "invert steering pan"},
     {"opt_edge_cues", "edge cues"},

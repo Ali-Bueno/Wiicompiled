@@ -1,6 +1,7 @@
 #include "accessibility/race/drive_assist.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 #include "accessibility/a11y_log.h"
@@ -9,6 +10,7 @@
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/screen_reader.h"
+#include "runtime_config.h"
 
 namespace a11y::race {
 namespace {
@@ -142,6 +144,23 @@ float LeadSeconds(float distance, float speed) {
     return speed > 0.0f ? distance / speed : kNoLead;
 }
 
+// Anticipation for the corner cues, as a multiplier on every lead above. Forza keeps its steering
+// guide's look-ahead and its braking notification's look-ahead as two INDEPENDENT user knobs
+// (docs/forza-blind-driving-assist.md §3), and the reason applies here unchanged: one horizon
+// cannot serve both a continuous pan the player reads moment to moment and a discrete warning that
+// has to fit a whole spoken phrase plus a reaction. `steering_look_ahead` tunes the first; this
+// tunes the second.
+//
+// The same factor-of-two sweep the steering knobs use, anchored so 50 reproduces the play-tested
+// ladder exactly - the default changes nothing about how the game already sounds.
+float CurveLeadScale() {
+    const float knob =
+        std::clamp(static_cast<float>(RuntimeConfigFile::AccessibilityCurveLookAhead()), 0.0f,
+                   100.0f) /
+        100.0f;
+    return std::pow(2.0f, 2.0f * knob - 1.0f);
+}
+
 }  // namespace
 
 void PlayCurveCueDemo() {
@@ -160,6 +179,9 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // checkpoint-coarse - thousands of units on a real course - which put the entry and apex
     // beeps the better part of a second off.
     const float arc = map.ArcOfPosition(state.x, state.z, station);
+    // One scale for every lead below, read once: the call, the countdown ladder and the chain
+    // window are one anticipation budget and have to move together.
+    const float leadScale = CurveLeadScale();
 
     const Curve* active = map.ActiveCurveAt(arc, kClearStations * spacing);
     // Once a corner's exit beep has sounded, the focus is handed to the next corner at once
@@ -206,7 +228,10 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
 
     // A corner that follows the previous one with no real straight between was already announced
     // and counted down as part of that call, so it gets its own traversal beeps and nothing else.
-    const float chainGap = state.speedPerSecond * kApproachLeadSec[kChainLeadStage];
+    // Scaled with the countdown by construction: the chain window IS "the gap too small to fit the
+    // follower's own countdown", so widening the countdown must widen what counts as chained, or
+    // corners would start falling into the hole between the two rules.
+    const float chainGap = state.speedPerSecond * kApproachLeadSec[kChainLeadStage] * leadScale;
     const bool chained = map.IsChainFollower(*upcoming, chainGap);
     // Spoken once: as its own call or inside a predecessor's chained phrase. The ledger also
     // vetoes the countdown - the gap is speed-relative, so a corner merged into a phrase at
@@ -248,14 +273,14 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     const int fromStage = mApproachBeeps;
     const bool countdownDue = !chained && !spokenInChain && !landmarkThisTick &&
                               fromStage < kApproachStages && toEntry > 0.0f &&
-                              lead <= kApproachLeadSec[fromStage];
+                              lead <= kApproachLeadSec[fromStage] * leadScale;
     if (countdownDue) {
         // A crash or respawn can land the kart already inside every countdown window; playing the
         // whole cascade then crams three beeps into three frames (heard live on kinoko's curve
         // 10). Skip to the furthest stage already reached and play only that one - same rule the
         // entry/apex/exit beeps follow.
         int stage = fromStage;
-        while (stage + 1 < kApproachStages && lead <= kApproachLeadSec[stage + 1]) {
+        while (stage + 1 < kApproachStages && lead <= kApproachLeadSec[stage + 1] * leadScale) {
             ++stage;
         }
         CueService::Instance().PlayOneShot(CueChannel::Curve, ApproachBeep(stage));
@@ -276,7 +301,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // waits for the exit. MK64 never speaks mid-corner either: a follower is folded into the
     // predecessor's phrase, spoken before the pair.
     if (!mAnnounced && !spokenInChain && !insideCorner && toEntry > 0.0f &&
-        lead <= kCallLeadSec) {
+        lead <= kCallLeadSec * leadScale) {
         mAnnounced = true;
         std::string phrase = CurvePhrase(*upcoming);
 

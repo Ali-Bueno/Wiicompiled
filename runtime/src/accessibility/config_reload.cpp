@@ -71,6 +71,8 @@ void ConfigReloadTick() {
     apply(live.accessibilitySteeringLookAhead, fresh.accessibilitySteeringLookAhead);
     apply(live.accessibilitySteeringPositionGain, fresh.accessibilitySteeringPositionGain);
     apply(live.accessibilitySteeringCurveAccent, fresh.accessibilitySteeringCurveAccent);
+    apply(live.accessibilitySteeringPanCurve, fresh.accessibilitySteeringPanCurve);
+    apply(live.accessibilityCurveLookAhead, fresh.accessibilityCurveLookAhead);
     apply(live.accessibilityEdgeCues, fresh.accessibilityEdgeCues);
     apply(live.accessibilityLineSource, fresh.accessibilityLineSource);
     apply(live.accessibilityKartVolume, fresh.accessibilityKartVolume);

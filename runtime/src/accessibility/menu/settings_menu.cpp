@@ -173,6 +173,22 @@ void SettingsMenu::BuildOptions() {
                  StepKnob(RuntimeConfigFile::AccessibilitySteeringCurveAccent(), dir));
          },
          nullptr});
+    mOptions.push_back(
+        {"opt_pan_curve",
+         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringPanCurve()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringPanCurve(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringPanCurve(), dir));
+         },
+         nullptr});
+    mOptions.push_back(
+        {"opt_curve_look_ahead",
+         [] { return std::to_string(RuntimeConfigFile::AccessibilityCurveLookAhead()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilityCurveLookAhead(
+                 StepKnob(RuntimeConfigFile::AccessibilityCurveLookAhead(), dir));
+         },
+         nullptr});
 
     const auto toggleInvert = [] {
         RuntimeConfigFile::SetAccessibilityInvertSteeringPan(

@@ -54,6 +54,8 @@ struct RuntimeUserConfig {
     std::optional<int32_t> accessibilitySteeringLookAhead;
     std::optional<int32_t> accessibilitySteeringPositionGain;
     std::optional<int32_t> accessibilitySteeringCurveAccent;
+    std::optional<int32_t> accessibilitySteeringPanCurve;
+    std::optional<int32_t> accessibilityCurveLookAhead;
     std::optional<std::string> accessibilityLineSource;
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
@@ -294,6 +296,15 @@ inline void EnsureConfigFile() {
               "# Cuanto profundiza el paneo del motor segun lo cerrada que sea la curva. 0 lo\n"
               "# apaga, 100 es el maximo.\n"
               "steering_curve_accent = 50\n"
+              "# Como se reparte el paneo entre los errores pequenos y los grandes (la curva de\n"
+              "# respuesta que usa Forza). 50 = lineal, que es lo ya afinado. Por encima de 50 los\n"
+              "# errores pequenos se oyen mas - subelo si el paneo se queda corto y casi todo el\n"
+              "# recorrido del sonido queda sin usar. Por debajo de 50, al reves.\n"
+              "steering_pan_curve = 50\n"
+              "# Antelacion de los avisos de curva (la frase hablada y la cuenta atras), aparte de\n"
+              "# la del guia. 50 = lo afinado hasta ahora, 100 = el doble de antelacion, 0 = la\n"
+              "# mitad.\n"
+              "curve_look_ahead = 50\n"
               "invert_steering_pan = false\n"
               "# Which line the guide follows: \"item\" (the route red shells fly - the default,\n"
               "# measured more centred on most courses) or \"cpu\" (the CPU drivers' route). The\n"
@@ -449,6 +460,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigInt(document, "accessibility", "steering_position_gain");
     config.accessibilitySteeringCurveAccent =
         FindConfigInt(document, "accessibility", "steering_curve_accent");
+    config.accessibilitySteeringPanCurve =
+        FindConfigInt(document, "accessibility", "steering_pan_curve");
+    config.accessibilityCurveLookAhead =
+        FindConfigInt(document, "accessibility", "curve_look_ahead");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
@@ -751,6 +766,18 @@ inline bool SetAccessibilitySteeringCurveAccent(int32_t value) {
     return WriteSetting("accessibility", "steering_curve_accent", std::to_string(clamped));
 }
 
+inline bool SetAccessibilitySteeringPanCurve(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilitySteeringPanCurve = clamped;
+    return WriteSetting("accessibility", "steering_pan_curve", std::to_string(clamped));
+}
+
+inline bool SetAccessibilityCurveLookAhead(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, 100);
+    Mutable().accessibilityCurveLookAhead = clamped;
+    return WriteSetting("accessibility", "curve_look_ahead", std::to_string(clamped));
+}
+
 inline bool SetAccessibilityEdgeCues(bool value) {
     Mutable().accessibilityEdgeCues = value;
     return WriteSetting("accessibility", "edge_cues", value ? "true" : "false");
@@ -886,6 +913,22 @@ inline int32_t AccessibilitySteeringPositionGain(int32_t fallback = 50) {
 // flat with respect to curvature, 100 is the maximum deepening.
 inline int32_t AccessibilitySteeringCurveAccent(int32_t fallback = 50) {
     return std::clamp(Get().accessibilitySteeringCurveAccent.value_or(fallback), 0, 100);
+}
+
+// How the guide's pan is distributed across the bearing range - Forza's own
+// `assistpanningextent_curveexp` (docs/forza-blind-driving-assist.md §2). 50 is the linear mapping
+// the player already tuned; above 50 expands the SMALL errors, which is where a logged race found
+// nearly all the useful signal (a 200-unit drift moved the pan 0.068 of 1.0); below 50 compresses
+// them, which is the "squared" response that was tried and rejected by ear.
+inline int32_t AccessibilitySteeringPanCurve(int32_t fallback = 50) {
+    return std::clamp(Get().accessibilitySteeringPanCurve.value_or(fallback), 0, 100);
+}
+
+// Anticipation for the CORNER cues - the spoken call and its countdown - independently of the
+// steering guide's own look-ahead, the way Forza keeps a steering and a braking look-ahead apart.
+// 50 is the play-tested ladder unchanged, 100 doubles the lead, 0 halves it.
+inline int32_t AccessibilityCurveLookAhead(int32_t fallback = 50) {
+    return std::clamp(Get().accessibilityCurveLookAhead.value_or(fallback), 0, 100);
 }
 
 // Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill
