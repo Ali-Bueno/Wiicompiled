@@ -137,23 +137,41 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
     }
     countdown = 60;
 
-    float trackX = 0.0f, trackZ = 0.0f;
-    map.Forward(station, trackX, trackZ);
-    float rightX = 0.0f, rightZ = 0.0f;
-    map.RightVector(station, rightX, rightZ);
-    const float alignment = state.forwardX * trackX + state.forwardZ * trackZ;
     const float arc = map.ArcOfPosition(state.x, state.z, station);
-    float lateral = 0.0f;
-    const bool haveLateral = map.RoadOffsetAtArc(arc, state.x, state.y, state.z, lateral);
+    // Both frames at the kart's own ARC, not at its checkpoint-mapped station. With 25 checkpoints
+    // for 48 stations the mapped station can be a station and a half away, which at 0.3-0.45 rad of
+    // turn per station is up to 49 degrees of tangent error inside a corner - enough to print
+    // align=1.00 for a kart that is nowhere near pointing along the line, which is exactly how a
+    // whole diagnosis went wrong once.
+    float trackX = 0.0f, trackZ = 0.0f;
+    map.ForwardAtArc(arc, trackX, trackZ);
+    float rightX = 0.0f, rightZ = 0.0f;
+    map.RightVectorAtArc(arc, rightX, rightZ);
+    const float alignment = state.forwardX * trackX + state.forwardZ * trackZ;
+    // RoadOffsetAtArc returns the offset NORMALISED by the KMP corridor, and on a course whose
+    // corridor is 51 that reads 20x smaller than the world units every other number here is in.
+    // Both are printed, world units first, because a mixed-unit log is worse than no log.
+    float lateral = 0.0f, corridor = 0.0f;
+    const bool haveLateral =
+        map.RoadOffsetAtArc(arc, state.x, state.y, state.z, lateral, nullptr, nullptr, &corridor);
+    const float lateralUnits = lateral * corridor;
+    // The real road on the side the kart is on, so a lateral can be read against the asphalt rather
+    // than against the corridor the course happens to declare.
+    float realDistance = 0.0f;
+    EdgeKind edgeKind = EdgeKind::Unknown;
+    if (!EdgeMap::SideAtArc(map, arc, lateralUnits > 0.0f, realDistance, edgeKind)) {
+        realDistance = 0.0f;
+    }
 
     RT_LOGF(RT_TAG_A11Y,
             "telemetry: cp=%d arc=%.0f kartfwd=(%.2f,%.2f) trackfwd=(%.2f,%.2f) "
-            "trackright=(%.2f,%.2f) align=%.2f lateral=%.2f(%d) bearing=%.0f reach=%.1f "
-            "pan=%.2f speed=%.1f\n",
+            "trackright=(%.2f,%.2f) align=%.2f lat_u=%.0f road=%.0f lateral=%.2f(%d) "
+            "bearing=%.0f reach=%.1f pan=%.2f speed=%.1f\n",
             state.checkpoint, static_cast<double>(arc), static_cast<double>(state.forwardX),
             static_cast<double>(state.forwardZ), static_cast<double>(trackX),
             static_cast<double>(trackZ), static_cast<double>(rightX),
             static_cast<double>(rightZ), static_cast<double>(alignment),
+            static_cast<double>(lateralUnits), static_cast<double>(realDistance),
             static_cast<double>(lateral), haveLateral ? 1 : 0, static_cast<double>(bearingDeg),
             static_cast<double>(reachWidths), static_cast<double>(pan),
             static_cast<double>(state.speed));

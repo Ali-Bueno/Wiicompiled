@@ -60,17 +60,23 @@ private:
     };
 
     // Top Speed's position term, in ABSOLUTE pan, graded on where the kart's heading is taking it
-    // rather than on where it is. `aimDistance` and `targetX/Z` are the pursuit term's own
-    // look-ahead and aim point, passed in so both terms are referenced to the same point on the
-    // road: the bearing to it, and the distance from it.
+    // rather than on where it is. Extrapolates over the ROAD's own half-width, not the pursuit term's look-ahead: that horizon
+    // is a lever on the kart's yaw, and sharing it made a held drift read as most of the road.
     PositionLean PositionPan(const RaceState& state, const CourseMap& map,
-                             const Handedness& handedness, float arc, float aimDistance,
-                             float targetX, float targetZ) const;
+                             const Handedness& handedness, float arc, float predictDistance) const;
     // One active curve drives every curve cue, as in MK64: the spoken call, the approach countdown
     // and the entry/apex/exit beeps all describe the same corner and change together.
     void UpdateCurveCues(const RaceState& state, const CourseMap& map, int station);
 
     float mSmoothedPan = 0.0f;
+    // How fast the kart is turning, radians per second, positive toward its right - the same sign
+    // every other cue uses. Differentiated from the heading and smoothed on the guide's own time
+    // constant. The pursuit term subtracts what this already accounts for, which is what makes the
+    // cue warn BEFORE a corner without moving its centre.
+    float mYawRate = 0.0f;
+    float mLastForwardX = 0.0f;
+    float mLastForwardZ = 0.0f;
+    bool mHaveLastForward = false;
     // The last full-lean side chosen while the aim point's bearing was still meaningful - held
     // while it sits nearly dead astern, where its side is numerical noise.
     float mLastToward = 0.0f;

@@ -108,6 +108,10 @@ float CurveAccentAt(const CourseMap& map, float arc) {
 
 void DriveAssist::Reset() {
     mSmoothedPan = 0.0f;
+    mYawRate = 0.0f;
+    mLastForwardX = 0.0f;
+    mLastForwardZ = 0.0f;
+    mHaveLastForward = false;
     mLastToward = 0.0f;
     mLastPositionBucket = 0;
     mLastPursuitBucket = 0;
@@ -146,6 +150,23 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                                  const Handedness& handedness, int station, float dtSec) {
     const float alpha = dtSec > 0.0f ? 1.0f - std::exp(-dtSec / kPanSmoothTauSec) : 0.0f;
 
+    // How fast the kart is turning, in the same sign as every other cue: positive is toward the
+    // kart's right. Measured from the heading the state already reads - that vector times the
+    // scalar speed IS the velocity, so this is the curvature of the path being driven and not the
+    // chassis yaw a drift throws around. Smoothed on the guide's own time constant, because a
+    // one-tick difference of a unit vector is mostly quantisation.
+    float kartRightX = 0.0f, kartRightZ = 0.0f;
+    handedness.RightVector(state, kartRightX, kartRightZ);
+    if (mHaveLastForward && dtSec > 0.0f) {
+        const float sinTurn =
+            std::clamp(-(mLastForwardX * kartRightX + mLastForwardZ * kartRightZ), -1.0f, 1.0f);
+        const float sampled = std::asin(sinTurn) / dtSec;
+        mYawRate += (sampled - mYawRate) * alpha;
+    }
+    mLastForwardX = state.forwardX;
+    mLastForwardZ = state.forwardZ;
+    mHaveLastForward = true;
+
     // The aim distance rides on the REAL road, the same width the position term grades against, so
     // one setting means the same anticipation on every course. The KMP corridor is not a road
     // width: on a Retro Rewind N64 course it measured 79 units against 1,100 of asphalt, which put
@@ -173,6 +194,35 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     const bool haveTarget = map.RouteBased() && widthScale > 0.0f &&
                             map.PointAtArc(arc + aimDistance, targetX, targetZ) &&
                             handedness.BearingTo(state, targetX, targetZ, bearing);
+    float bearingRaw = bearing;
+    float bearingRef = 0.0f;
+    if (haveTarget) {
+        // What the kart is ALREADY doing about the corner, subtracted, so that what remains is what
+        // it still has to do. Exact geometry and no constant: a kart turning at yaw rate w reaches a
+        // point T seconds ahead along its own arc, and the chord to that point makes an angle of
+        // exactly w*T/2 with its tangent. So w*T/2 is the bearing a kart tracking the line properly
+        // MUST have, and the difference is the steering ERROR.
+        //
+        // That is the player's own definition of the centre: "el centro tiene que significar que el
+        // jugador esta en el sitio correcto para no chocarse con los limites de pista Y SEGUIR
+        // COMPLETANDO LA CURVA". On the line but not yet turning is not such a place. The previous
+        // cut subtracted the ROAD's curvature instead of the KART's, which called it one: a kart
+        // pointing straight down a straight at a corner read as perfect until the corner had
+        // already begun, so the warning arrived WITH the corner instead of before it. Player,
+        // 2026-08-31, on 150cc: "siento que reacciono demasiado tarde... a ccs mas bajos va". At
+        // 100cc the spoken call alone still leaves room to recover; at 150 it does not.
+        //
+        // Subtracting the kart's own turning keeps every case the road-curvature version got right -
+        // straight and pointing straight is zero, a corner tracked correctly is zero at any
+        // tightness, and both terms still vanish together so no knob can move the centre - and
+        // restores the warning a full look-ahead before the corner, which is the part that was lost.
+        //
+        // The horizon is the guide's own: the aim distance's floor can only ever put the aim point
+        // FURTHER away in time, and extrapolating the kart's turning past where the guide itself
+        // looks would invent a corner the cue has not seen yet.
+        bearingRef = mYawRate * aimSeconds * 0.5f;
+        bearing -= bearingRef;
+    }
     if (!haveTarget) {
         // No trustworthy aim point this frame: fade to centre rather than hold a stale lean.
         mSmoothedPan += (0.0f - mSmoothedPan) * alpha;
@@ -209,9 +259,20 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     // steer AWAY from ("curva a la izquierda -> motor a la derecha"). `steering_strength` governs
     // this part and only this part, exactly as it did before the position term existed.
     const float pursuitPan = -toward * strength;
+    // The position term deliberately does NOT share the aim horizon. That horizon multiplies the
+    // kart's heading error, so at the player's `steering_look_ahead = 100` (0.79 s, ~5,200 units at
+    // racing speed) one degree of yaw predicts 91 units of offset: six degrees consume the whole
+    // safe band and twelve saturate the term while the kart sits dead centre. Their log says so -
+    // on the line (|lat| <= 150 of an 1,100 half-width) the median pan was 0.327, and 0.316 in
+    // corners, which is where a drift is held. Lowering the knob cured the brusqueness and cost the
+    // anticipation with it ("con look ahead a 40 me fue peor; lo subí a 100, me fue mejor"),
+    // because one knob moved both. So the aim point keeps the full look-ahead - that is where the
+    // reaction time comes from - and the prediction extrapolates over the ROAD's own half-width,
+    // the very scale it is then normalised by. The term reads as "where you are, plus one road
+    // width of where you are pointing", and yaw's lever drops 4.7x on that course.
     const PositionLean lean =
         astern ? PositionLean{}
-               : PositionPan(state, map, handedness, arc, aimDistance, targetX, targetZ);
+               : PositionPan(state, map, handedness, arc, widthScale);
     // The accent rides on BOTH terms, because the corner's difficulty is how little room it leaves:
     // the same drift that is nothing on a long straight is most of the road in a hairpin, and the
     // engine has to say so ("el motor tiene que acentuarse para decir cuan difícil es la curva").
@@ -243,11 +304,13 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         // kPositionLogStep, so two decimals printed a "+0.05" that looked like it should not have
         // tripped it.
         RT_LOGF(RT_TAG_A11Y,
-                "position pan: lat=%.0f rate=%.0f pred=%.0f drift=%.0f u=%.2f pan=%+.3f "
-                "pursuit=%+.3f total=%+.3f%s\n",
+                "position pan: lat=%.0f rate=%.0f pred=%.0f drift=%.0f u=%.2f braw=%.0f "
+                "wturn=%.0f berr=%.0f pan=%+.3f pursuit=%+.3f total=%+.3f%s\n",
                 static_cast<double>(lean.lateral), static_cast<double>(lean.rate),
                 static_cast<double>(lean.predicted), static_cast<double>(drift),
-                static_cast<double>(lean.u), static_cast<double>(lean.pan),
+                static_cast<double>(lean.u), static_cast<double>(bearingRaw / kDegToRad),
+                static_cast<double>(bearingRef / kDegToRad),
+                static_cast<double>(bearing / kDegToRad), static_cast<double>(lean.pan),
                 static_cast<double>(pursuitPan), static_cast<double>(pan),
                 cancelling ? " CANCEL" : "");
     }
@@ -265,8 +328,7 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
 // "seguía en el centro como si nada".
 DriveAssist::PositionLean DriveAssist::PositionPan(const RaceState& state, const CourseMap& map,
                                                   const Handedness& handedness, float arc,
-                                                  float aimDistance, float targetX,
-                                                  float targetZ) const {
+                                                  float predictDistance) const {
     PositionLean out;
     const int gainKnob = RuntimeConfigFile::AccessibilitySteeringPositionGain();
     float offset = 0.0f, corridor = 0.0f;
@@ -282,29 +344,37 @@ DriveAssist::PositionLean DriveAssist::PositionPan(const RaceState& state, const
     // overshoots: by the time the sound centres, the kart still carries the lateral speed that put
     // it there, and it sails past - the player's "me paso de largo y me voy hacia el otro lado".
     //
-    // Measured against the line AT THE AIM POINT, never against the tangent at the kart. The first
-    // cut projected the drift along that tangent, which is a straight line the road walks away from
-    // by its own sagitta: at a 6500 unit aim distance and a moderate 10000 unit radius the omitted
-    // curvature term is 2132 units against the 953 the projection kept, so in any real bend the
-    // predicted offset came out INVERTED - it read "drifting inside" while the kart was heading for
-    // the outside, and cancelled the pursuit term that had it right (2.5% of a race's samples).
+    // Carried forward in the ROAD's frame, never in the world's. What is predicted is the kart's
+    // offset FROM THE LINE at the point it reaches, so a kart tracking a bend correctly predicts
+    // zero at any curvature and only a heading that disagrees with the road moves it.
     //
-    // This is the Stanley decomposition: the pursuit term is the BEARING to the aim point and this
-    // is the DISTANCE from it, so the two are components of one vector about one point. They can
-    // still disagree - heading error against cross-track error, which is real information - but
-    // they can no longer disagree about geometry.
-    const float aimArc = arc + aimDistance;
-    float aimRightX = 0.0f, aimRightZ = 0.0f;
-    map.RightVectorAtArc(aimArc, aimRightX, aimRightZ);
-    const float projectedX = state.x + state.forwardX * aimDistance;
-    const float projectedZ = state.z + state.forwardZ * aimDistance;
-    out.predicted = (projectedX - targetX) * aimRightX + (projectedZ - targetZ) * aimRightZ;
-
-    // Diagnostic only: the instantaneous rate at which the kart crosses the line under its nose.
-    // The predictor needs no time and no speed - both cancel into the aim distance.
+    // The previous cut projected the kart along its current heading in a straight WORLD line and
+    // measured that against the line at the aim point. That assumes the driver stops steering for
+    // the whole look-ahead, which inside a corner is exactly the wrong model: it charged a kart
+    // driving the bend perfectly the arc's own sagitta, d^2/2R. Measured on the player's log, with
+    // the kart on the line (|lateral| <= 100), the median predicted offset was 1041 units in a
+    // corner against 136 on a straight and the pan 0.507 against 0.044 - 11.5x for the same real
+    // position - and pred agreed in sign with pursuit in 39 of 39 corner samples, so the two piled
+    // up instead of describing different things. One sample read `lat=10 pred=1232 u=0.99
+    // total=+0.680`: ten units off the line, graded at 99% of the way to the edge. The player then
+    // does what the cue asks - come back until it centres - and it can only centre by driving to
+    // the inside edge, which is exactly what they reported: "solo puedo pasar yendo cerca del
+    // limite de la curva a la izquierda".
+    //
+    // This restores the module's own stated invariant, that both terms are zero when the kart is on
+    // the line pointing along it. The pursuit bearing stays non-zero through a bend and should -
+    // that one is the instruction to keep turning.
+    const float aimArc = arc + predictDistance;
     float trackRightX = 0.0f, trackRightZ = 0.0f;
     map.RightVectorAtArc(arc, trackRightX, trackRightZ);
-    out.rate = state.speedPerSecond * (state.forwardX * trackRightX + state.forwardZ * trackRightZ);
+    // The sine of the kart's heading error against the road: the only part of its heading that
+    // carries it across the line.
+    const float across = state.forwardX * trackRightX + state.forwardZ * trackRightZ;
+    out.predicted = out.lateral + predictDistance * across;
+
+    // Diagnostic only: the instantaneous rate at which the kart crosses the line under its nose.
+    // The predictor needs no time and no speed - both cancel into the prediction distance.
+    out.rate = state.speedPerSecond * across;
 
     // Side and ear flip TOGETHER with the prediction. Keying the ear off the present offset while
     // the magnitude came from the predicted one would put the loudest warning in the wrong ear at
@@ -313,11 +383,11 @@ DriveAssist::PositionLean DriveAssist::PositionPan(const RaceState& state, const
     handedness.RightVector(state, kartRightX, kartRightZ);
     const bool predictedRight = out.predicted > 0.0f;
     // Two frames, as in the edge cue: WHICH edge is approached is a question about the track, so it
-    // takes the route frame's sign at the aim point - the frame the prediction is expressed in;
-    // which EAR the lean belongs in is a question about the kart, so it goes through Handedness and
-    // stays right when the kart is spun.
+    // takes the route frame's sign at the kart's own arc - the frame the prediction is now
+    // expressed in; which EAR the lean belongs in is a question about the kart, so it goes through
+    // Handedness and stays right when the kart is spun.
     const bool earRight =
-        out.predicted * (aimRightX * kartRightX + aimRightZ * kartRightZ) > 0.0f;
+        out.predicted * (trackRightX * kartRightX + trackRightZ * kartRightZ) > 0.0f;
 
     // Normalised by the REAL road where the prediction LANDS, and never by the KMP corridor, which
     // measured 2-4x narrower than the asphalt and would saturate this term while the player is

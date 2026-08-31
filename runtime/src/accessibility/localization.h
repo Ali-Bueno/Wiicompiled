@@ -22,6 +22,10 @@ void Init();
 // Text for a key: the language file's value, or the built-in English default.
 std::string Get(const std::string& key);
 
+// Whether a key exists at all. Lets an optional phrase — a menu option's description — be
+// skipped, instead of speaking the key back, which is what Get() does when it is missing.
+bool Has(const std::string& key);
+
 // Get() plus {name} placeholder substitution, e.g. Format("lap", {{"n", "2"}, {"total", "3"}}).
 std::string Format(const std::string& key,
                    std::initializer_list<std::pair<std::string_view, std::string>> args);

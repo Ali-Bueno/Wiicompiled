@@ -68,8 +68,11 @@ struct KclRoad {
     static KclFloor ProbeFloorNear(float x, float z, float referenceY, float window);
 
     // Walks outwards along +/-(rightX, rightZ) until the floor stops being Road, then looks past
-    // the edge to say what is actually there.
-    static KclEdges ProbeEdges(float x, float y, float z, float rightX, float rightZ);
+    // the edge to say what is actually there. Each side also stops at its own reach, because a
+    // surface test alone cannot tell this stretch of road from a paved area joined to it - the
+    // caller supplies where its own stretch ends (CourseMap::LateralReach).
+    static KclEdges ProbeEdges(float x, float y, float z, float rightX, float rightZ,
+                               float leftReach, float rightReach);
 
     // The signed lateral distance from this point to the nearest Road, searching both ways out to
     // `limit`. Zero when the point already stands on road. False when no road is within the limit,

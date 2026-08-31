@@ -71,11 +71,73 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_pan_curve", "pan response curve"},
     {"opt_curve_look_ahead", "curve cue anticipation"},
     {"opt_position_gain", "off-line lean gain"},
+    {"opt_curve_accent", "curve accent"},
     {"opt_invert_pan", "invert steering pan"},
     {"opt_edge_cues", "edge cues"},
     {"demo_edge", "hear the edge tone"},
     {"demo_curve", "hear a curve beep"},
     {"demo_itembox", "hear the item box"},
+
+    // Spoken after the row's name and value. One "<key>_help" per option, by the naming
+    // convention settings_menu.cpp uses; a row without one simply reads name and value.
+    {"opt_master_volume_help",
+     "Volume of the whole game: engine, music and effects together. Screen reader speech is not "
+     "affected."},
+    {"opt_music_volume_help", "Background music only. Engines and effects keep their own volume."},
+    {"opt_kart_volume_help",
+     "Your own kart: engine, drift and your driver's voice. Above one hundred it is louder than "
+     "the original game, which helps you hear the steering guide that rides on it."},
+    {"opt_rival_volume_help",
+     "The other karts' engines and voices. Lower it to stop the pack covering your own engine."},
+    {"opt_roulette_volume_help",
+     "The item roulette spin and the jingle when your item is decided. Menu clicks are left "
+     "alone."},
+    {"opt_steering_strength_help",
+     "How hard the engine pans when the kart points away from the racing line. This is the main "
+     "part of the guide: raise it for a wider, more obvious swing, lower it for a subtler one."},
+    {"opt_steering_sensitivity_help",
+     "How far off you have to be pointing before the pan reaches full lean. Raise it and small "
+     "errors already pan fully, lower it and only a big one does."},
+    {"opt_look_ahead_help",
+     "How far ahead in time the guide aims, from a tenth of a second up to about eight tenths. "
+     "Raise it to be warned of corners earlier, lower it to follow what is happening right now."},
+    {"opt_position_gain_help",
+     "How much drifting off to one side of the line leans the engine, on top of where the kart "
+     "points. At zero only your heading pans the sound."},
+    {"opt_curve_accent_help",
+     "How much a tight corner strengthens the pan. Raise it and hairpins pan far harder than "
+     "straights, at zero the corner makes no difference."},
+    {"opt_pan_curve_help",
+     "Spreads the pan between small and large errors. Fifty is a straight response; above it "
+     "small errors are audible sooner, below it only large ones pan noticeably."},
+    {"opt_curve_look_ahead_help",
+     "How early the spoken corner calls and their countdown beeps arrive. Raise it to be told "
+     "sooner, lower it to be told closer to the corner. The engine pan is not affected."},
+    {"opt_invert_pan_help",
+     "Off, the engine sounds toward the side you must steer away from. On flips it, so you steer "
+     "toward the sound."},
+    {"opt_edge_cues_help",
+     "Beeps that quicken as you near the edge of the road, and a held tone while you are off it. "
+     "Turning it off keeps the spoken off road and wrong way calls."},
+    {"demo_edge_help", "Plays the held tone that sounds while the kart is off the road."},
+    {"demo_curve_help", "Plays the beep that marks a corner coming up."},
+    {"demo_itembox_help",
+     "Plays the blip that points at a nearby item box while your hands are empty."},
+
+    {"weight_light", "light weight"},
+    {"weight_medium", "medium weight"},
+    {"weight_heavy", "heavy weight"},
+    {"entity_locked", "locked"},
+    {"stats_intro", "stats"},
+    {"stat_speed", "speed"},
+    {"stat_weight", "weight"},
+    {"stat_acceleration", "acceleration"},
+    {"stat_handling", "handling"},
+    {"stat_drift", "drift"},
+    {"stat_offroad", "off road"},
+    {"stat_miniturbo", "mini turbo"},
+    {"stat_value", "{name} {n}"},
+
     {"value_on", "on"},
     {"value_off", "off"},
     {"percent", "{n} percent"},
@@ -177,6 +239,10 @@ std::string Get(const std::string& key) {
         return key;  // audible and debuggable, unlike silence
     }
     return it->second;
+}
+
+bool Has(const std::string& key) {
+    return g_phrases.find(key) != g_phrases.end();
 }
 
 std::string Format(const std::string& key,

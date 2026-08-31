@@ -40,11 +40,10 @@ constexpr float kEdgeStep = 0.25f;
 // seven identical beeps at offsets of 7 to 8.65 corridors, all at full urgency.
 constexpr float kEdgeBeepCeiling = kEdgeOnset + kEdgeUrgencySpan;
 
-// Where the warning starts, as a share of the real road left on that side. The primary limit is the
-// game's own authored corridor half-width at that station - what the CPU drivers keep clear of
-// trouble - and this caps it so that on a road narrower than two corridors the quiet band is never
-// squeezed below the half the player is actually driving in.
-constexpr float kEdgeOnsetRealFraction = 0.5f;
+// Where the warning starts is a share of the REAL road left on that side - kEdgeOnsetRealFraction
+// (edge_map.h, shared with the line repair), so the quiet band is the inner half of the road and
+// the warning is the outer half. The authored KMP corridor used to narrow it and no longer does:
+// see EdgeMagnitude.
 
 constexpr float kEdgeHz = 300.0f;
 constexpr float kEdgeBeepAmplitude = 0.38f;
@@ -89,14 +88,26 @@ bool KindIsFall(EdgeKind kind) { return kind == EdgeKind::Fall; }
 // The fallback is clamped to the same ceiling the measured path saturates at. Raw, it reaches 7-8
 // on a corridor the kart is far outside, so a station whose probe failed would hand the ratchet and
 // the pitch ramp a number from a different scale and the cue would change character mid-drift.
-float EdgeMagnitude(float lateralUnits, float offset, bool haveReal, float realDistance,
-                    float corridor) {
+//
+// The onset was `min(corridor, kEdgeOnsetRealFraction * realDistance)` - the authored corridor
+// allowed to narrow the band, on the reading that the CPU's lane is the lane. It is the third
+// place that reading has broken on a course whose corridor field is degenerate, after the aim
+// distance and the road width, and it broke worst here. On the course the player reported the
+// corridor is 79 units against 750 of real road each side, so the onset was `min(79, 375) = 79`:
+// **671 of those 750 units were silent and the entire warning happened in the last 79.** Every
+// edge beep in that race logged `margin` 68-72, which at racing speed is not a warning, and the
+// player hit the barrier through a long bend while steering it correctly - "giro bien a la
+// izquierda y aun asi me acabo chocando".
+//
+// So the corridor is gone from here. The measured road is the one width this module trusts, and
+// half of it is already a lane-like band by construction - no second, unreliable input needed.
+float EdgeMagnitude(float lateralUnits, float offset, bool haveReal, float realDistance) {
     const float fallback = std::min(std::fabs(offset), kEdgeBeepCeiling);
     if (!haveReal) {
         return fallback;
     }
     const float margin = realDistance - std::fabs(lateralUnits);
-    const float onsetMargin = std::min(corridor, kEdgeOnsetRealFraction * realDistance);
+    const float onsetMargin = kEdgeOnsetRealFraction * realDistance;
     if (!(onsetMargin > 0.0f)) {
         return fallback;
     }
@@ -226,8 +237,7 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     }
 
     const float lateralUnits = offset * corridor;
-    const float magnitude =
-        EdgeMagnitude(lateralUnits, offset, haveReal, realDistance, corridor);
+    const float magnitude = EdgeMagnitude(lateralUnits, offset, haveReal, realDistance);
 
     // The two grades agree on their thresholds but not on how fast they move through them, so a
     // switch between them re-arms the ratchet: carrying a level set by the other measurement over

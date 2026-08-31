@@ -902,6 +902,14 @@ constexpr DWORD kCppExceptionCodeMsvc = 0xE06D7363;
 // AddressSanitizer uses STATUS_FATAL_APP_EXIT when it detects an error and wants to report it.
 // We must let ASan's handler run so it can print file/line information.
 constexpr DWORD kAsanFatalAppExit = 0x40000015; // STATUS_FATAL_APP_EXIT
+// Exception-code severity is bits 31-30 (winnt.h STATUS_SEVERITY_*). The two failure classes
+// are read off codes whose severity is known rather than written out by hand.
+constexpr int kExceptionSeverityShift = 30;
+constexpr DWORD kExceptionSeverityMask = 0x3u << kExceptionSeverityShift;
+constexpr DWORD kExceptionSeverityError = EXCEPTION_ACCESS_VIOLATION & kExceptionSeverityMask;
+constexpr DWORD kExceptionSeverityWarning = EXCEPTION_BREAKPOINT & kExceptionSeverityMask;
+// Bounds the transcript if something raises a benign exception in a loop.
+constexpr unsigned kBenignExceptionLogLimit = 8;
 
 void ReportStructuredException(EXCEPTION_POINTERS* info) {
     if (!info || !info->ExceptionRecord) {
@@ -996,6 +1004,22 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
         info->ExceptionRecord->ExceptionCode == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C (OutputDebugStringW)
         info->ExceptionRecord->ExceptionCode == 0x406D1388 || // SetThreadName
         info->ExceptionRecord->ExceptionCode == kAsanFatalAppExit) { // ASan reporting - let it print first
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Registered with first=1, this handler sees every first-chance exception in the process,
+    // including ones the raiser is about to handle itself. Only the ERROR and WARNING severities
+    // describe a failure; the success and informational ranges - where a bare Win32 error code
+    // raised through RaiseException also lands, such as RPC_S_SERVER_UNAVAILABLE from the COM/RPC
+    // stack - must reach their own handler instead of killing the process.
+    const DWORD severity = info->ExceptionRecord->ExceptionCode & kExceptionSeverityMask;
+    if (severity != kExceptionSeverityError && severity != kExceptionSeverityWarning) {
+        static std::atomic<unsigned> s_benignExceptionsLogged{0};
+        if (s_benignExceptionsLogged.fetch_add(1) < kBenignExceptionLogLimit) {
+            RT_LOG(RT_TAG_RUNTIME) << "Ignoring non-fatal first-chance exception 0x" << std::hex
+                                   << std::uppercase << info->ExceptionRecord->ExceptionCode
+                                   << std::dec << std::nouppercase << std::endl;
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
     

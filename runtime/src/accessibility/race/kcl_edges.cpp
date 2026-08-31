@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 
 #include "accessibility/race/kcl_road.h"
@@ -40,15 +41,22 @@ constexpr float kEdgeSameSurfaceUnits = kEdgeBankWindowUnits;
 // is the drop already defined as past recovery, so a surface that far from the line is not it.
 constexpr float kEdgeDriftLimitUnits = kEdgeProbeReachUnits;
 
+// Steps this side may take: the caller's reach, never past the probe cap, and never fewer than one
+// so a station whose stretch is narrower than a step still reports the step it can resolve.
+int SamplesFor(float reach) {
+    const int steps = static_cast<int>(reach / kKclLateralStepUnits);
+    return std::max(1, std::min(steps, kLateralSamples));
+}
+
 // Walks outwards one step at a time, carrying the last surface height forward so a sloped road is
 // followed rather than dropped. The distance reported is the last sample that was still road, so it
 // is a lower bound with the step as its resolution.
-KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ) {
+KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samples) {
     KclEdge edge;
     float referenceY = y;
     float edgeY = y;
     float stopped = 0.0f;
-    for (int i = 1; i <= kLateralSamples; ++i) {
+    for (int i = 1; i <= samples; ++i) {
         const float distance = kKclLateralStepUnits * static_cast<float>(i);
         const KclFloor floor = KclRoad::ProbeFloorNear(x + dirX * distance, z + dirZ * distance,
                                                        referenceY, kEdgeBankWindowUnits);
@@ -70,7 +78,9 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ) {
         edge.distance = distance;
         edgeY = floor.y;
         referenceY = floor.y;
-        if (i == kLateralSamples) {
+        if (i == samples) {
+            // Still road where this station's own stretch ends, so there is no edge to warn about
+            // on this side - the same answer the probe cap gives, and for the same reason.
             edge.cause = KclSurface::Road;
             edge.openEnded = true;
             return edge;
@@ -148,7 +158,8 @@ bool KclRoad::FindRoad(float x, float y, float z, float rightX, float rightZ, fl
     return false;
 }
 
-KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float rightZ) {
+KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float rightZ,
+                             float leftReach, float rightReach) {
     KclEdges out;
     if (!Ready()) {
         return out;
@@ -165,8 +176,8 @@ KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float righ
     // point, then the sweep follows whatever that turned out to be.
     out.centre = ProbeFloorNear(x, z, y, kEdgeProbeReachUnits);
     const float referenceY = out.centre.hit ? out.centre.y : y;
-    out.right = KclSweepSide(x, referenceY, z, dirX, dirZ);
-    out.left = KclSweepSide(x, referenceY, z, -dirX, -dirZ);
+    out.right = KclSweepSide(x, referenceY, z, dirX, dirZ, SamplesFor(rightReach));
+    out.left = KclSweepSide(x, referenceY, z, -dirX, -dirZ, SamplesFor(leftReach));
     return out;
 }
 

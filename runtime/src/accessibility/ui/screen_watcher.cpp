@@ -7,30 +7,15 @@
 
 #include "accessibility/a11y_log.h"
 #include "accessibility/screen_reader.h"
+#include "entity_info.h"
 #include "focus.h"
+#include "layers.h"
 #include "lyt_walk.h"
 #include "memory.h"
 #include "page_controls.h"
 
 namespace a11y::ui {
 namespace {
-
-// SectionMgr::CreateInstance (func_80634C90) stores the singleton here, and SectionMgr::MenuUpdate
-// (func_8063583C) reads the Section from its offset 0.
-constexpr std::uint32_t kSectionMgrInstance = 0x809C1E38;
-constexpr std::uint32_t kSectionMgrSection = 0x00;
-
-// Section::GetTopLayerPage (func_80622EA0): a count at +0x37C and an array of Page* at +0x354, the
-// last entry being the page on top.
-constexpr std::uint32_t kSectionLayerArray = 0x354;
-constexpr std::uint32_t kSectionLayerCount = 0x37C;
-constexpr std::uint32_t kMaxLayers = 16;
-
-// Page state, from Page::UpdateState (func_80601D24): 1 initialised, 2 activated, 3 entering,
-// 4 active, 5 exiting, 6 finished. Waiting for 4 is what replaces guessing an animation length -
-// by then the entrance has finished, the initial focus is set, and pane alpha means something.
-constexpr std::uint32_t kPageState = 0x08;
-constexpr std::uint32_t kPageStateActive = 4;
 
 // Label classes whose text follows the cursor: a tooltip, or the name a grid paints outside its
 // buttons. Learned from behaviour - a label seen changing while the cursor moved belongs to the
@@ -69,22 +54,26 @@ std::string g_spokenFocusText = {};
 // told from one that just sits there.
 std::unordered_map<std::uint32_t, std::string> g_labelText;
 
-std::uint32_t TopPage() noexcept {
-    std::uint32_t manager = 0;
-    std::uint32_t section = 0;
-    std::uint32_t count = 0;
-    if (!Memory::TryRead32(kSectionMgrInstance, manager) || manager == 0 ||
-        !Memory::TryRead32(manager + kSectionMgrSection, section) || section == 0 ||
-        !Memory::TryRead32(section + kSectionLayerCount, count) || count == 0 ||
-        count > kMaxLayers) {
-        return 0;
+// A description belongs to the item it describes, so it must never be the whole sentence. On a grid
+// the button is a picture and the label naming it is repainted a frame or two after the cursor
+// lands, so the reader holds the announcement back rather than say "medium weight" and name the kart
+// afterwards. Bounded, so a screen that genuinely names nothing is not waited on forever - there the
+// description is spoken alone, which still beats silence.
+constexpr int kMaxNameWaits = 60;
+std::uint32_t g_waitingOn = 0;
+int g_waits = 0;
+
+bool WaitingForName(std::uint32_t token) {
+    if (token != g_waitingOn) {
+        g_waitingOn = token;
+        g_waits = 0;
     }
-    std::uint32_t page = 0;
-    if (!Memory::TryRead32(section + kSectionLayerArray + (count - 1) * sizeof(std::uint32_t),
-                           page)) {
-        return 0;
-    }
-    return page;
+    return ++g_waits <= kMaxNameWaits;
+}
+
+void DoneWaiting() {
+    g_waitingOn = 0;
+    g_waits = 0;
 }
 
 // The screen's text, by exclusion: every control the cursor cannot reach. That is the whole
@@ -92,31 +81,44 @@ std::uint32_t TopPage() noexcept {
 // class nobody has seen before is a label because the cursor cannot reach it, not because it was on
 // a list, so it reads instead of going mute.
 struct PageLabels {
-    std::vector<std::uint32_t> controls;
+    std::vector<std::uint32_t> controls;    // on the page the cursor is on
+    std::vector<std::uint32_t> background;  // on the other layers stacked with it
     bool trustworthy = false;
     bool anySelectable = false;
 };
 
-PageLabels ReadLabels(std::uint32_t page, std::uint32_t focused) noexcept {
+PageLabels ReadLabels(const std::vector<std::uint32_t>& layers, std::uint32_t page,
+                      std::uint32_t focused) noexcept {
     PageLabels labels;
-    const std::vector<std::uint32_t> selectable = SelectableControls(page);
-    labels.anySelectable = !selectable.empty();
+    labels.anySelectable = !SelectableControls(page).empty();
 
     // A page with a focused control necessarily has selectable ones. If none came back, the
     // manipulator list did not read, and calling every button a label would recite whole menus -
     // the one thing the spec forbids outright. Announce only the focused item instead.
+    //
+    // Asked of the cursor's own page, never of the stack: a lower layer's buttons say nothing about
+    // whether this page read, and letting them answer would re-enable the per-frame value diff on a
+    // page with nothing to select - the race HUD, which then narrates itself over the timer.
     labels.trustworthy = labels.anySelectable || focused == 0;
     if (!labels.trustworthy) {
         return labels;
     }
 
-    std::unordered_set<std::uint32_t> reachable(selectable.begin(), selectable.end());
+    // Reachability spans the whole stack, so a button a layer down is never mistaken for text.
+    std::unordered_set<std::uint32_t> reachable;
+    for (const std::uint32_t layer : layers) {
+        const std::vector<std::uint32_t> selectable = SelectableControls(layer);
+        reachable.insert(selectable.begin(), selectable.end());
+    }
     if (focused != 0) {
         reachable.insert(focused);  // it resolved, so it is reachable whatever the list said
     }
-    for (const std::uint32_t control : PageControls(page)) {
-        if (reachable.count(control) == 0) {
-            labels.controls.push_back(control);
+    for (const std::uint32_t layer : layers) {
+        std::vector<std::uint32_t>& into = layer == page ? labels.controls : labels.background;
+        for (const std::uint32_t control : PageControls(layer)) {
+            if (reachable.count(control) == 0) {
+                into.push_back(control);
+            }
         }
     }
     return labels;
@@ -153,6 +155,25 @@ std::string Join(const std::vector<std::string>& parts) {
     return result;
 }
 
+// A label whose text moved since the last cursor move, spoken; one that went blank, skipped - that
+// is a screen tidying up, not something to say. Every label the stack shows goes through here.
+void CollectChangedLabels(const std::vector<std::uint32_t>& labels, bool learn,
+                          std::vector<std::string>& parts) {
+    for (const std::uint32_t label : labels) {
+        const std::string text = ReadControlText(label);
+        const auto known = g_labelText.find(label);
+        const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;
+        g_labelText[label] = text;
+        if (!changed || text.empty()) {
+            continue;
+        }
+        if (learn) {
+            LearnItemBound(label);
+        }
+        parts.push_back(text);
+    }
+}
+
 // Arriving on a screen.
 //
 // A screen with a cursor announces the item under it, and nothing else. Reciting the whole page is
@@ -168,13 +189,11 @@ std::string Join(const std::vector<std::string>& parts) {
 // frame a page settles the manipulator often has not picked its initial control yet, and reading
 // "no focus" as "nothing to select" made every return to the main menu recite its four buttons.
 // Saying nothing here is safe: focus resolves a frame later and the cursor path announces it.
-void AnnounceScreen(std::uint32_t page, std::uint32_t focused, const std::string& focusedText) {
-    g_announcedPage = page;
-    g_lastFocused = focused;
-    g_spokenFocusText = focusedText;
+void AnnounceScreen(const std::vector<std::uint32_t>& layers, std::uint32_t page,
+                    std::uint32_t focused, const std::string& focusedText) {
     g_labelText.clear();
 
-    const PageLabels labels = ReadLabels(page, focused);
+    const PageLabels labels = ReadLabels(layers, page, focused);
     std::vector<std::string> screenParts;
     std::vector<std::string> itemParts;
     for (const std::uint32_t label : labels.controls) {
@@ -185,14 +204,34 @@ void AnnounceScreen(std::uint32_t page, std::uint32_t focused, const std::string
         }
         (IsItemBound(label) ? itemParts : screenParts).push_back(text);
     }
+    // A lower layer is as often the menu underneath a dialog as it is the frame around this page,
+    // so it is snapshot but not recited: only a class already seen following the cursor is read,
+    // which is what a tooltip is. A screen whose tooltip lives a layer down is therefore quiet the
+    // first time and reads from the first cursor move onwards.
+    for (const std::uint32_t label : labels.background) {
+        const std::string text = ReadControlText(label);
+        g_labelText[label] = text;
+        if (!text.empty() && IsItemBound(label)) {
+            itemParts.push_back(text);
+        }
+    }
 
     std::vector<std::string> parts;
     if (!labels.anySelectable) {
         parts = std::move(screenParts);
     } else {
+        if (focusedText.empty() && itemParts.empty() && WaitingForName(page)) {
+            return;  // the page stays uncommitted, so the next frame comes back here
+        }
         parts.push_back(focusedText);
         parts.insert(parts.end(), itemParts.begin(), itemParts.end());
+        parts.push_back(DescribeFocusedEntity(layers, focused));
     }
+
+    DoneWaiting();
+    g_announcedPage = page;
+    g_lastFocused = focused;
+    g_spokenFocusText = focusedText;
 
     const std::string announcement = Join(parts);
     if (announcement.empty()) {
@@ -205,22 +244,25 @@ void AnnounceScreen(std::uint32_t page, std::uint32_t focused, const std::string
 // Moving the cursor: the item, plus whichever labels moved with it. A button that names itself is
 // the common case; when it does not - character and kart selection - the screen keeps the name of
 // the highlighted item in a label of its own, and that label is what just changed.
-void AnnounceItem(std::uint32_t page, std::uint32_t focused, const std::string& focusedText) {
+void AnnounceItem(const std::vector<std::uint32_t>& layers, std::uint32_t page,
+                  std::uint32_t focused, const std::string& focusedText) {
+    const PageLabels labels = ReadLabels(layers, page, focused);
+    std::vector<std::string> parts{focusedText};
+    CollectChangedLabels(labels.controls, /*learn=*/true, parts);
+    CollectChangedLabels(labels.background, /*learn=*/true, parts);
+
+    // Nothing but the focused text and whichever labels moved with it can name the item, so if none
+    // of them said anything the name has not been painted yet - wait for it instead of describing an
+    // item the player has not been told the name of.
+    if (parts.size() == 1 && focusedText.empty() && WaitingForName(focused)) {
+        return;  // g_lastFocused is left alone, so the next frame comes back here
+    }
+    DoneWaiting();
     g_lastFocused = focused;
     g_spokenFocusText = focusedText;
-
-    std::vector<std::string> parts{focusedText};
-    for (const std::uint32_t label : ReadLabels(page, focused).controls) {
-        const std::string text = ReadControlText(label);
-        const auto known = g_labelText.find(label);
-        const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;
-        g_labelText[label] = text;
-        if (!changed || text.empty()) {
-            continue;  // a label going blank is a screen tidying up, not something to say
-        }
-        LearnItemBound(label);
-        parts.push_back(text);
-    }
+    // Last, because the name of a driver or a kart is painted outside its button, so it arrives as
+    // one of the labels above - describing the entity before it had named it read backwards.
+    parts.push_back(DescribeFocusedEntity(layers, focused));
 
     const std::string announcement = Join(parts);
     if (!announcement.empty()) {
@@ -243,8 +285,9 @@ void AnnounceItem(std::uint32_t page, std::uint32_t focused, const std::string& 
 // Nothing is learned from this. A label that changes while the cursor sits still belongs to the
 // control the cursor is on, not to whichever item is focused, so treating it as item-bound would
 // misorder every later arrival announcement.
-void AnnounceValueChange(std::uint32_t page, std::uint32_t focused) {
-    const PageLabels labels = ReadLabels(page, focused);
+void AnnounceValueChange(const std::vector<std::uint32_t>& layers, std::uint32_t page,
+                         std::uint32_t focused) {
+    const PageLabels labels = ReadLabels(layers, page, focused);
 
     // A page the cursor cannot reach at all was already read once on arrival, and nothing on it is
     // a value the player is scrubbing through. The race HUD is exactly that page, and re-diffing it
@@ -256,15 +299,8 @@ void AnnounceValueChange(std::uint32_t page, std::uint32_t focused) {
     }
 
     std::vector<std::string> parts;
-    for (const std::uint32_t label : labels.controls) {
-        const std::string text = ReadControlText(label);
-        const auto known = g_labelText.find(label);
-        const bool changed = known == g_labelText.end() ? !text.empty() : known->second != text;
-        g_labelText[label] = text;
-        if (changed && !text.empty()) {
-            parts.push_back(text);
-        }
-    }
+    CollectChangedLabels(labels.controls, /*learn=*/false, parts);
+    CollectChangedLabels(labels.background, /*learn=*/false, parts);
 
     const std::string announcement = Join(parts);
     if (!announcement.empty()) {
@@ -275,6 +311,7 @@ void AnnounceValueChange(std::uint32_t page, std::uint32_t focused) {
 }  // namespace
 
 void ResetScreenWatcher() {
+    DoneWaiting();
     g_announcedPage = 0;
     g_lastFocused = 0;
     g_spokenFocusText.clear();
@@ -282,27 +319,24 @@ void ResetScreenWatcher() {
 }
 
 void TickScreenWatcher() {
-    const std::uint32_t page = TopPage();
-    if (page == 0) {
-        return;
+    const std::vector<std::uint32_t> layers = ActiveLayerPages();
+    if (layers.empty()) {
+        return;  // no section yet, or the top page is still animating in or out
     }
-    std::uint32_t state = 0;
-    if (!Memory::TryRead32(page + kPageState, state) || state != kPageStateActive) {
-        return;  // Still animating in or out; nothing stable to read yet.
-    }
+    const std::uint32_t page = layers.back();
 
     const std::uint32_t focused = FocusedControl(page);
     const std::string focusedText = focused != 0 ? ReadControlText(focused) : std::string{};
 
     if (page != g_announcedPage) {
-        AnnounceScreen(page, focused, focusedText);
+        AnnounceScreen(layers, page, focused, focusedText);
         return;
     }
     if (focused != g_lastFocused || focusedText != g_spokenFocusText) {
-        AnnounceItem(page, focused, focusedText);
+        AnnounceItem(layers, page, focused, focusedText);
         return;
     }
-    AnnounceValueChange(page, focused);
+    AnnounceValueChange(layers, page, focused);
 }
 
 }  // namespace a11y::ui

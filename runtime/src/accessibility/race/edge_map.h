@@ -19,6 +19,13 @@ enum class EdgeKind : std::uint8_t {
 
 const char* EdgeKindName(EdgeKind kind);
 
+// The share of the real road on one side that has to stay clear before the track-limit cue starts
+// warning about it. Shared, because the line repair below needs exactly the same definition: a
+// route point standing closer to an edge than this is standing inside the cue's own warning band,
+// and the guide must never call a point like that "centred" - the player's spec is that the centre
+// of the pan is the line they can follow calmly.
+inline constexpr float kEdgeOnsetRealFraction = 0.5f;
+
 // The real road at one station, in world units either side of the line. The two sides are valid
 // independently: a route point that sits within one march step of the left boundary still has a
 // perfectly good right-hand measurement, and discarding it would silence the cue exactly on the

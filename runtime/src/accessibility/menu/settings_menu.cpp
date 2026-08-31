@@ -21,6 +21,10 @@ namespace {
 // range is a handful of presses, matching the F10 bar's percent sliders.
 constexpr int kStepPercent = 5;
 
+// A row's description lives under its own name key plus this suffix, so a new option carries its
+// explanation by naming convention rather than by a second field nobody remembers to fill.
+constexpr const char* kHelpKeySuffix = "_help";
+
 int ToPercent(float value) {
     return static_cast<int>(std::lround(std::clamp(value, 0.0f, 1.0f) * 100.0f));
 }
@@ -245,6 +249,17 @@ void SettingsMenu::SpeakFocused(bool withName, bool interrupt) {
             text += ", ";
         }
         text += option.value();
+    }
+    // Description last, the way the game-menu narration reads an item and then its tooltip:
+    // scrubbing the list interrupts it, dwelling on a row hears it in full.
+    if (withName) {
+        const std::string helpKey = option.nameKey + kHelpKeySuffix;
+        if (loc::Has(helpKey)) {
+            if (!text.empty()) {
+                text += ". ";
+            }
+            text += loc::Get(helpKey);
+        }
     }
     if (!text.empty()) {
         ScreenReader::Instance().Speak(text, interrupt);

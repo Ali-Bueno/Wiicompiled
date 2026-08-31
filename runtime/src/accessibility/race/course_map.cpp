@@ -110,6 +110,59 @@ void CourseMap::RightVectorAtArc(float arc, float& x, float& z) const {
     z = -fx * mRightPerpSign;
 }
 
+// A lateral sweep that only stops when the surface stops being road walks off this stretch of
+// course entirely wherever the route doubles back and the ground between the two passes is paved:
+// the infield of an oval, the inside of a hairpin. Measured on a Retro Rewind N64 course, the
+// sweep reported 3100-8000 units of "road" on one side against 500-3500 on the other, eight
+// stations reaching the 8000-unit probe cap without finding an edge, and the wide side swapping
+// from left to right half way round the lap - the signature of crossing to the opposite straight.
+// Everything the guide measures in road widths then rides on a road several times too wide.
+//
+// The stopping rule is the route's own medial axis, which is why it needs no constant: the sample
+// is this station's for as long as this station's point is the nearest one to it. Walking out along
+// +/-right, station j takes over where the perpendicular bisector of the two points crosses the
+// ray, at |d|^2 / (2*dot(d, r)) with d = P_j - P_i; only a station the ray actually closes on
+// (dot > 0) can ever take over.
+//
+// It cannot truncate a genuinely wide road. A neighbour along the line is offset forwards, so its
+// dot is ~0 and its crossing is effectively at infinity - purely sideways motion never hands the
+// sample away. On the inside of a bend the nearest crossing is the arc's own centre, one turn
+// radius out, and a road whose half-width reached that far would have no inside edge at all.
+float CourseMap::LateralReach(int station, bool right) const {
+    const int count = StationCount();
+    if (count <= 0) {
+        return 0.0f;
+    }
+    const int i = Wrap(station);
+    float rx = 0.0f, rz = 0.0f;
+    RightVector(i, rx, rz);
+    if (!right) {
+        rx = -rx;
+        rz = -rz;
+    }
+    const float px = mPoints[i].x;
+    const float pz = mPoints[i].z;
+    // The lap is the course's own largest length scale, so an unbounded ray still returns a real
+    // number and the caller never has to know about a sentinel.
+    float reach = mLapLength;
+    for (int j = 0; j < count; ++j) {
+        if (j == i) {
+            continue;
+        }
+        const float dx = mPoints[j].x - px;
+        const float dz = mPoints[j].z - pz;
+        const float along = dx * rx + dz * rz;
+        if (!(along > 0.0f)) {
+            continue;
+        }
+        const float crossing = (dx * dx + dz * dz) / (2.0f * along);
+        if (crossing < reach) {
+            reach = crossing;
+        }
+    }
+    return reach;
+}
+
 bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
                       const std::vector<Checkpoint>& checkpoints) {
     Clear();
@@ -547,14 +600,16 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     }
     mRoadShifted = true;  // one attempt per course, successful or not
 
-    // Averaged with its neighbours before anything moves. The shifts are zero on most stations, so
-    // this only does anything where a repaired stretch meets an untouched one - and that step is
-    // precisely what the curvature pass would otherwise read as a corner.
-    std::vector<float> smoothed(static_cast<std::size_t>(n), 0.0f);
+    // Applied exactly as measured. This was a 3-tap average of the neighbouring shifts, because on
+    // 2026-08-31 an undiluted 1,000-unit correction at one station beside an untouched neighbour
+    // added a fourth curve to the map - `entry=4 apex=4 exit=4 right arc=0`, spoken as "gentle
+    // right" where no right turn fits. EdgeMap::CentreLine now bounds the STEP between neighbouring
+    // shifts rather than the shifts themselves, so the profile already arrives continuous and the
+    // average has nothing left to smooth. It does still have something to break: it cut a required
+    // move to a third of itself, and that move is the whole point of the repair.
     int moved = 0;
     for (int i = 0; i < n; ++i) {
-        smoothed[i] = (shifts[Wrap(i - 1)] + shifts[i] + shifts[Wrap(i + 1)]) / 3.0f;
-        if (smoothed[i] != 0.0f) {
+        if (shifts[i] != 0.0f) {
             ++moved;
         }
     }
@@ -570,13 +625,18 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         RightVector(i, rightX[i], rightZ[i]);
     }
 
+    // Kept so the whole repair can be undone if it turns out to have changed the shape of the
+    // course rather than the placement of the line - see the corner check below.
+    const std::vector<Station> before = mPoints;
+    const std::size_t curvesBefore = mCurves.size();
+
     float worst = 0.0f;
     for (int i = 0; i < n; ++i) {
-        const float dx = rightX[i] * smoothed[i];
-        const float dz = rightZ[i] * smoothed[i];
+        const float dx = rightX[i] * shifts[i];
+        const float dz = rightZ[i] * shifts[i];
         mPoints[i].x += dx;
         mPoints[i].z += dz;
-        worst = std::max(worst, std::fabs(smoothed[i]));
+        worst = std::max(worst, std::fabs(shifts[i]));
     }
 
     // Arc, curvature and corners all descend from the positions, so they are rebuilt. The
@@ -587,6 +647,28 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         mTurn[i] = SignedTurnAt(i);
     }
     BuildCurves();
+
+    // The repair moves the line WITHIN the road; it must never change what the course is. A repair
+    // that adds a corner has bent the line instead of placing it, and the player is then told to
+    // turn where the track does not - which is exactly what happened on 2026-08-31, when an
+    // uncapped correction produced a zero-length "gentle right" at the shifted station and cost a
+    // whole play-test. The step cap in EdgeMap::CentreLine should make this unreachable;
+    // this is the check that says so out loud rather than trusting the arithmetic.
+    if (mCurves.size() > curvesBefore) {
+        const std::size_t curvesAfter = mCurves.size();  // read before the rebuild restores it
+        mPoints = before;
+        BuildDerived();
+        for (int i = 0; i < n; ++i) {
+            mTurn[i] = SignedTurnAt(i);
+        }
+        BuildCurves();
+        RT_LOGF(RT_TAG_A11Y,
+                "course map: line repair REVERTED - it added %d corner(s) to the course (%d -> %d), "
+                "worst shift %.0f\n",
+                static_cast<int>(curvesAfter - curvesBefore), static_cast<int>(curvesBefore),
+                static_cast<int>(curvesAfter), static_cast<double>(worst));
+        return false;
+    }
 
     RT_LOGF(RT_TAG_A11Y,
             "course map: %d of %d stations were off the road, line repaired, worst shift %.0f, "

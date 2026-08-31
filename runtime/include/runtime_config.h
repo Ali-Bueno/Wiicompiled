@@ -285,9 +285,9 @@ inline void EnsureConfigFile() {
               "# \"settings reloaded\" a couple of seconds later.\n"
               "# The steering guide pans the game's own engine note towards the side to steer\n"
               "# AWAY from. All four knobs are 0-100.\n"
-              "steering_strength = 27\n"
-              "steering_sensitivity = 50\n"
-              "steering_look_ahead = 57\n"
+              "steering_strength = 40\n"
+              "steering_sensitivity = 40\n"
+              "steering_look_ahead = 100\n"
               "# Cuanto inclina el motor el estar fuera de la linea, al cuadrado: casi plano en el\n"
               "# centro y fuerte cerca del borde real de la pista. Mide donde VAS a estar un poco\n"
               "# mas adelante, no donde estas: centro = vas camino de estar en la linea, y cruzarla\n"
@@ -306,17 +306,17 @@ inline void EnsureConfigFile() {
               "# mitad.\n"
               "curve_look_ahead = 50\n"
               "invert_steering_pan = false\n"
-              "# Which line the guide follows: \"item\" (the route red shells fly - the default,\n"
-              "# measured more centred on most courses) or \"cpu\" (the CPU drivers' route). The\n"
-              "# value is ALWAYS quoted.\n"
-              "line_source = \"item\"\n"
+              "# Which line the guide follows: \"cpu\" (the CPU drivers' route - the default,\n"
+              "# and the one every play-test of the guide has run on) or \"item\" (the route red\n"
+              "# shells fly, measured more centred offline but never driven). ALWAYS quoted.\n"
+              "line_source = \"cpu\"\n"
               "# Beeps as the kart nears the edge of the road, and a held tone once it leaves it.\n"
               "edge_cues = true\n"
               "# Engine volume per kart, as a percentage of the game's own; 100 leaves the game\n"
-              "# untouched. Raise your own kart and lower the rivals to hear your own engine,\n"
-              "# which is what the steering guide speaks through.\n"
-              "kart_volume = 100\n"
-              "rival_kart_volume = 100\n"
+              "# untouched. The defaults already raise your own kart and drop the rivals, so you\n"
+              "# hear your own engine - which is what the steering guide speaks through.\n"
+              "kart_volume = 180\n"
+              "rival_kart_volume = 20\n"
               "item_roulette_volume = 100\n\n"
               "[paths]\n"
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
@@ -885,11 +885,11 @@ inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
 // right values are a matter of ear and of how fast the player drives - not something that can be
 // settled from the game's code. Strength default: the player's ear pick, 2026-08-27 ("steering
 // guide strength lo dejas en 27").
-inline int32_t AccessibilitySteeringStrength(int32_t fallback = 27) {
+inline int32_t AccessibilitySteeringStrength(int32_t fallback = 40) {
     return std::clamp(Get().accessibilitySteeringStrength.value_or(fallback), 0, 100);
 }
 
-inline int32_t AccessibilitySteeringSensitivity(int32_t fallback = 50) {
+inline int32_t AccessibilitySteeringSensitivity(int32_t fallback = 40) {
     return std::clamp(Get().accessibilitySteeringSensitivity.value_or(fallback), 0, 100);
 }
 
@@ -897,7 +897,7 @@ inline int32_t AccessibilitySteeringSensitivity(int32_t fallback = 50) {
 // que hacerlo dentro de la curva, no antes"); higher trades that for anticipation. Default is the
 // value the player settled on by ear on the clamped-smoothing build, final sweep 2026-08-27
 // ("steering loock a head en 57").
-inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 57) {
+inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 100) {
     return std::clamp(Get().accessibilitySteeringLookAhead.value_or(fallback), 0, 100);
 }
 
@@ -936,7 +936,7 @@ inline int32_t AccessibilityCurveLookAhead(int32_t fallback = 50) {
 // player read the enemy line as hugging the edge; "cpu" restores the enemy route. Any value but
 // "cpu" means the item route, with automatic fallback to the enemy route when ITPT does not
 // close a lap.
-inline bool AccessibilityLineFromItemRoute(bool fallback = true) {
+inline bool AccessibilityLineFromItemRoute(bool fallback = false) {
     const auto& value = Get().accessibilityLineSource;
     if (!value.has_value()) {
         return fallback;
@@ -950,11 +950,11 @@ inline bool AccessibilityLineFromItemRoute(bool fallback = true) {
 // which saturates the end product safely), so >100 is a genuine boost against the distance and
 // fade factors. Rival karts get their own knob so a blind player can pull them under their own
 // engine, which carries the steering guide.
-inline int32_t AccessibilityKartVolume(int32_t fallback = 100) {
+inline int32_t AccessibilityKartVolume(int32_t fallback = 180) {
     return std::clamp(Get().accessibilityKartVolume.value_or(fallback), 0, 200);
 }
 
-inline int32_t AccessibilityRivalKartVolume(int32_t fallback = 100) {
+inline int32_t AccessibilityRivalKartVolume(int32_t fallback = 20) {
     return std::clamp(Get().accessibilityRivalKartVolume.value_or(fallback), 0, 100);
 }
 

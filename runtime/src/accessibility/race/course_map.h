@@ -10,6 +10,11 @@ namespace a11y::race {
 
 struct Checkpoint;
 
+// Heading change between route segments, in radians, below which the track reads as straight. The
+// curve pass grades corners against it; the line repair is capped by it, so a correction can never
+// bend the line hard enough to invent a corner the course does not have.
+inline constexpr float kTightnessEnter = 0.15f;
+
 enum class TurnSeverity { Easy, Normal, Hard, Hairpin };
 
 // A run of consecutive stations turning the same way. Landmarks are station indices.
@@ -144,6 +149,11 @@ public:
     // lives beside RightVector so the perpendicular is derived in one place: a caller that needs
     // "across the line" at the kart's own arc must not rebuild it from ForwardAtArc itself.
     void RightVectorAtArc(float arc, float& x, float& z) const;
+
+    // How far a sideways walk from this station stays on this station's own stretch of course,
+    // before the ground it reaches belongs to another one. The route's own medial axis, so it
+    // needs no constant. See the definition for why a lateral sweep needs it at all.
+    float LateralReach(int station, bool right) const;
 
     // +1 when "right" is (forward.z, -forward.x), -1 when it is the other perpendicular - the
     // world's chirality, settled from the checkpoint data. The kart lives in the same world, so
