@@ -21,6 +21,15 @@ constexpr float kDegToRad = 3.14159265358979f / 180.0f;
 // player's by-ear tuning - identical when the frame rate is not 60.
 constexpr float kPanSmoothTauSec = 0.1f;
 
+// The yaw estimate gets its own, far shorter window. It is a difference of unit vectors, so what
+// it has to reject is a single-frame outlier, and three samples is the shortest window that
+// outvotes one; sharing the pan's 100 ms put TWO lags in series on the anticipation path - the one
+// signal that has to arrive early. Cost measured on the 08-31 logs: the player's correction weave
+// runs at 0.46 Hz, where a 100 ms lag turns the estimate by 16 degrees of phase and so injects
+// about 9 degrees of bearing error that is pure filter, against an on-the-line residual of 17-26.
+// In SAMPLES, not seconds, because the quantisation it rejects is per-sample.
+constexpr float kYawSmoothSamples = 3.0f;
+
 // Nearly dead astern, the aim point's side is numerical noise around the atan2 seam, and each
 // flip would glide the pan through zero - the one value that must mean "on the line". Past this
 // bearing the guide holds whichever side it already leans to until the kart rotates back.
@@ -149,6 +158,7 @@ void DriveAssist::Reset() {
 void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                                  const Handedness& handedness, int station, float dtSec) {
     const float alpha = dtSec > 0.0f ? 1.0f - std::exp(-dtSec / kPanSmoothTauSec) : 0.0f;
+    const float yawAlpha = 1.0f - std::exp(-1.0f / kYawSmoothSamples);
 
     // How fast the kart is turning, in the same sign as every other cue: positive is toward the
     // kart's right. Measured from the heading the state already reads - that vector times the
@@ -161,7 +171,7 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         const float sinTurn =
             std::clamp(-(mLastForwardX * kartRightX + mLastForwardZ * kartRightZ), -1.0f, 1.0f);
         const float sampled = std::asin(sinTurn) / dtSec;
-        mYawRate += (sampled - mYawRate) * alpha;
+        mYawRate += (sampled - mYawRate) * yawAlpha;
     }
     mLastForwardX = state.forwardX;
     mLastForwardZ = state.forwardZ;
@@ -245,7 +255,19 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     // The response curve shapes the NORMALISED bearing, never the raw one, so it maps 0 to 0 and 1
     // to 1: "on the line pointing along it" stays dead centre - the player's own definition of the
     // cue - and full lean still means full lean. Only the distribution between the two moves.
-    const float normalised = std::clamp(accent * bearing / fullLean, -1.0f, 1.0f);
+    // ...and it needs a silent centre, which it did not have. Top Speed's continuous pan grades the
+    // kart's real position; this grades a BEARING, and the 08-31 logs put that bearing at 17-26
+    // degrees while the player sat on the line - the weave's own residual, not a corner. So being
+    // centred was never audible as anything, and 153 returns to the line gave back the whole error
+    // (far-side over near-side amplitude 0.98, successive swings x1.10, a limit cycle at 0.46 Hz)
+    // because nothing told the player when to stop correcting: "quiero devolver el auto al centro
+    // pero me voy demasiado hacia el otro lado". The guide's own threshold for "this reads as
+    // straight" is the honest null - below it the curve pass does not call a corner, so the guide
+    // must not lean for one - and the remainder is rescaled so full lean still means full lean and
+    // only the useful range is spread out. Capped at half the range so no sensitivity can invert it.
+    const float deadband = std::min(kTightnessEnter, fullLean * 0.5f);
+    const float live = std::copysign(std::max(std::fabs(bearing) - deadband, 0.0f), bearing);
+    const float normalised = std::clamp(accent * live / (fullLean - deadband), -1.0f, 1.0f);
     float toward =
         std::copysign(std::pow(std::fabs(normalised), PanCurveExponent()), normalised);
     const bool astern = std::fabs(bearing) > kAsternRad;
@@ -278,7 +300,23 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
     // engine has to say so ("el motor tiene que acentuarse para decir cuan difícil es la curva").
     // Both terms are zero when the kart is on the line pointing along it, so scaling them cannot
     // move the centre - "cuando esté centrado pues tiene que ser una posición buena para ella".
-    const float pan = std::clamp(pursuitPan + accent * lean.pan, -1.0f, 1.0f);
+    // The position term is a statement about WHERE THE KART IS, so it gets the silent centre every
+    // other position cue in this mod already has: nothing while the kart is inside the band the
+    // track-limit cue stays quiet in and the line repair guarantees the line sits inside, opening
+    // out to full by that band's edge. One constant for all three, so "centred", "not warning" and
+    // "quiet" are one statement - the player's invariant, "la linea tiene que ser el sitio por el
+    // cual el jugador pueda pasar sin chocarse, por eso tiene que estar en el centro del paneo".
+    // The PREDICTED offset is in the test as well as the present one, so a kart sitting in the band
+    // while pointed out of it is still warned, and the term keeps the damping it exists for. The
+    // pursuit term is deliberately NOT gated by this: that one is the corner warning, and a kart
+    // centred on a straight with a corner coming must still hear it - the 150cc fix.
+    const float bandUnits = kEdgeOnsetRealFraction * widthScale;
+    const float onset =
+        bandUnits > 0.0f
+            ? std::clamp(std::max(std::fabs(lean.lateral), std::fabs(lean.predicted)) / bandUnits,
+                         0.0f, 1.0f)
+            : 1.0f;
+    const float pan = std::clamp(pursuitPan + accent * onset * lean.pan, -1.0f, 1.0f);
     mSmoothedPan += (pan - mSmoothedPan) * alpha;
     mLastBearingDeg = bearing / kDegToRad;
     mLastReachWidths = aimWidths;
@@ -304,14 +342,16 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         // kPositionLogStep, so two decimals printed a "+0.05" that looked like it should not have
         // tripped it.
         RT_LOGF(RT_TAG_A11Y,
-                "position pan: lat=%.0f rate=%.0f pred=%.0f drift=%.0f u=%.2f braw=%.0f "
-                "wturn=%.0f berr=%.0f pan=%+.3f pursuit=%+.3f total=%+.3f%s\n",
+                "position pan: lat=%.0f rate=%.0f pred=%.0f drift=%.0f u=%.2f onset=%.2f "
+                "braw=%.0f wturn=%.0f berr=%.0f pan=%+.3f pursuit=%+.3f total=%+.3f heard=%+.3f%s\n",
                 static_cast<double>(lean.lateral), static_cast<double>(lean.rate),
                 static_cast<double>(lean.predicted), static_cast<double>(drift),
-                static_cast<double>(lean.u), static_cast<double>(bearingRaw / kDegToRad),
+                static_cast<double>(lean.u), static_cast<double>(onset),
+                static_cast<double>(bearingRaw / kDegToRad),
                 static_cast<double>(bearingRef / kDegToRad),
                 static_cast<double>(bearing / kDegToRad), static_cast<double>(lean.pan),
                 static_cast<double>(pursuitPan), static_cast<double>(pan),
+                static_cast<double>(mSmoothedPan),
                 cancelling ? " CANCEL" : "");
     }
 }
