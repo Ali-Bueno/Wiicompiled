@@ -173,10 +173,11 @@ public:
 
     const Curve* NextCurve(int station) const;
 
-    // The corner the cues should currently be describing: the one whose entry is nearest ahead,
-    // except that a corner the kart is already inside stays selected until its exit is `clearance`
-    // behind. Without that hold the choice flips at the exit and the next corner's countdown starts
-    // while the player is still in this one.
+    // The corner the cues should currently be describing: the corner most recently ENTERED whose
+    // exit is not yet `clearance` behind, and only when there is none of those, the nearest corner
+    // ahead. Without the hold past the exit the choice flips the moment this corner's exit is
+    // crossed and the next one's countdown starts while the player is still in this one; without
+    // "most recently entered" a chicane keeps describing its first half from inside its second.
     const Curve* ActiveCurve(int station, float clearance) const;
 
     // As ActiveCurve, measured from a continuous arc position instead of a station index.
@@ -206,6 +207,9 @@ private:
     int Wrap(int i) const;
     // The station segment a continuous arc position falls in, and how far along it (0..1).
     bool SegmentForArc(float arc, int& station, float& t) const;
+    // The blended forward inside an already-resolved segment, so a caller that has the segment
+    // does not pay for resolving it again. Left zero when the two ends nearly cancel.
+    void ForwardInSegment(int station, float t, float& x, float& z) const;
     bool BuildRouteStations();
     void BuildCheckpointStations(const std::vector<Checkpoint>& checkpoints);
     void BuildDerived();
@@ -213,6 +217,10 @@ private:
     void BuildCurves();
     void EmitCurve(int entry, int end);
     float SignedTurnAt(int i) const;
+    // The length SignedTurnAt divided the heading change by - the mean of this station's two
+    // segments. Multiplying the curvature back by it recovers the raw angle, which is what the
+    // game's own 0.3 rad corner threshold is stated in.
+    float SpanAt(int i) const;
     float TightnessAt(int i) const;
     float SegmentHeading(int i) const;
     // Temporary diagnostic dump of the segmentation result.

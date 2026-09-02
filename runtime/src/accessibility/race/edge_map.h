@@ -30,6 +30,11 @@ inline constexpr float kEdgeOnsetRealFraction = 0.5f;
 // independently: a route point that sits within one march step of the left boundary still has a
 // perfectly good right-hand measurement, and discarding it would silence the cue exactly on the
 // narrow ledges where it matters most.
+//
+// The distances are always measured from the line the COURSE MAP has, never from wherever the
+// sweep happened to stand: from the authored station while the repair is only a proposal, and from
+// the moved station once EdgeMap::ConfirmShift says the map kept it. A side the authored point
+// already stands outside reads negative, which is the truth about that point.
 struct StationEdges {
     bool leftValid = false;
     bool rightValid = false;
@@ -37,9 +42,9 @@ struct StationEdges {
     float rightDistance = 0.0f;
     EdgeKind leftKind = EdgeKind::Unknown;
     EdgeKind rightKind = EdgeKind::Unknown;
-    // How far this station had to move, towards the track's right, to stand on asphalt at all -
-    // and the distances above are measured from where it landed, not from where it was authored.
-    // Zero on a station the route already put on the road, which is most of them.
+    // How far this station should move towards the track's right to sit on asphalt and inside its
+    // own safe band - the TOTAL correction from where the course authored it. Zero on a station the
+    // route already placed well, which is most of them.
     float shift = 0.0f;
 
     bool Valid(bool right) const { return right ? rightValid : leftValid; }
@@ -82,6 +87,13 @@ struct EdgeMap {
     // two must stay one line: aiming at one while grading position against the other is the bug
     // that made a player following the guide read as drifting inside every corner.
     static const std::vector<float>& Shifts();
+
+    // Told by CourseMap::ApplyRoadShift whether it kept the shift above. On `true` the measured
+    // distances are rebased onto the moved stations; on `false` they stay on the authored ones.
+    // Either way SideAtArc and the course map then describe the same line, which they did not when
+    // the repair was reverted and the distances still measured from where it would have gone.
+    // Idempotent: only the first call after a build decides.
+    static void ConfirmShift(bool applied);
 
     // True when at least one station had to be moved - the course authored part of its line off
     // the road, which is worth saying once rather than silently correcting.

@@ -47,11 +47,16 @@ inline bool TryWriteFloat(std::uint32_t addr, float value) {
     return Memory::TryWrite32(addr, bits);
 }
 
+// A byte, addressed by the aligned word containing it, for the same reason the halfword helper is:
+// Read8 throws, and Contains is not a guarantee the read itself will succeed.
 inline bool TryU8(std::uint32_t addr, std::uint8_t& out) {
-    if (!Memory::Contains(addr, 1)) {
+    std::uint32_t word = 0;
+    if (!Memory::TryRead32(addr & ~std::uint32_t{3}, word)) {
         return false;
     }
-    out = Memory::Read8(addr);
+    // After the swap to host order the byte at the word's own address is the most significant one.
+    const std::uint32_t shift = (3u - (addr & 3u)) * 8u;
+    out = static_cast<std::uint8_t>((word >> shift) & 0xFFu);
     return true;
 }
 

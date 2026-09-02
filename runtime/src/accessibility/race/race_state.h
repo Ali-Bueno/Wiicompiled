@@ -12,9 +12,13 @@ struct RaceState {
     // must treat this as "say nothing" rather than as stale data.
     bool valid = false;
 
-    // True only while the player is actually driving - past the countdown and before the finish.
+    // True only while the player is actually driving - past the countdown, before the finish, and
+    // not paused.
     bool driving = false;
     bool finished = false;
+    // The game's own race frame counter stopped advancing: the pause menu is up. Timers must not
+    // advance and cues must not sound while it is set.
+    bool paused = false;
     int countdownFrames = 0;
 
     float x = 0.0f, y = 0.0f, z = 0.0f;
@@ -25,6 +29,9 @@ struct RaceState {
     // The same speed converted with the measured frame duration, which is what any threshold
     // expressed in seconds has to divide by. Filled in by the race manager, not read from the game.
     float speedPerSecond = 0.0f;
+    // Duration of one guest frame in seconds, from the same TV-format read. Anything differentiated
+    // per frame (the yaw estimate) divides by this, never by the host's frame time.
+    float frameSec = 0.0f;
     // The game's own 0..1 speed ratio, already capped. Preferred over anything self-calibrated: it
     // is correct from the first frame and is not skewed by a boost or by the engine class.
     float speedRatio = 0.0f;

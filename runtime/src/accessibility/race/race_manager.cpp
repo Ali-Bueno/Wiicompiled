@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "accessibility/a11y_log.h"
+#include "accessibility/audio/cue_service.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/drive_assist.h"
 #include "accessibility/race/edge_map.h"
@@ -39,6 +40,15 @@ Handedness g_handedness;
 
 std::uint64_t g_courseSignature = 0;
 int g_lastStation = -1;
+
+// Last frame's readable/finished state, so a race restarting on the SAME course - which keeps the
+// course signature and so never reaches ForgetCourse - still gets its per-race services cleared.
+bool g_prevValid = false;
+bool g_prevFinished = false;
+
+// The lap the road shift last saw. A lap boundary is one of the two moments where moving the line
+// under the kart is harmless; -1 means there has been no lap to compare against yet.
+int g_lastShiftLap = -1;
 
 // Frames spent retrying a course whose routes read but did not close a sane lap. Early frames can
 // catch the KMP mid-life; past the window the checkpoint-ordered fallback is accepted (progress
@@ -88,19 +98,32 @@ float GuestFramesPerSecond() {
     return kGuestDefaultFramesPerSecond;
 }
 
+// What one race owns, as opposed to what the course owns. Cleared whenever a race begins, so a
+// retry cannot inherit the previous race's spoken lap, position or finish. Only the services: the
+// frame's RaceState has already been read by the time this runs mid-tick.
+void ForgetRace() {
+    g_narrator.Reset();
+    g_driveAssist.Reset();
+    g_trackLimits.Reset();
+    g_itemBeacon.Reset();
+}
+
 void ForgetCourse() {
     g_map.Clear();
     g_lastStation = -1;
     g_routeRetryFrames = 0;
+    g_lastShiftLap = -1;
+    g_prevValid = false;
+    g_prevFinished = false;
     g_handedness.Forget();
-    g_driveAssist.Reset();
-    g_trackLimits.Reset();
-    g_narrator.Reset();
-    g_itemBeacon.Reset();
     g_enginePan.Reset();
     g_kartVolume.Reset();
     g_rouletteVolume.Reset();
     EdgeMap::Reset();
+    ForgetRace();
+    // The surface latch lives here and is file-static, so without this the last course's off-road
+    // is announced on the new course's grid.
+    ResetRaceState();
 }
 
 // Temporary. One line whenever the readable/driving state changes, so a silent race says which of
@@ -127,7 +150,7 @@ void LogStateChange(const RaceState& state) {
 // the course direction agrees with the kart's, where the kart sits across the track, and which way
 // the guide is pointing. Remove once the steering cue is confirmed.
 void LogTelemetry(const RaceState& state, const CourseMap& map, int station, float pan,
-                  float bearingDeg, float reachWidths) {
+                  float predictedFraction, float horizonUnits) {
     static int countdown = 0;
     if (!state.valid || !state.driving || !map.Loaded()) {
         return;
@@ -163,18 +186,21 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
         realDistance = 0.0f;
     }
 
+    // `pred` is where the guide expects the kart to be across the road at the end of its horizon,
+    // as a fraction of the real half-width and signed to track right - so it is directly comparable
+    // with lateral, and `horizon` says how far ahead that prediction reaches.
     RT_LOGF(RT_TAG_A11Y,
             "telemetry: cp=%d arc=%.0f kartfwd=(%.2f,%.2f) trackfwd=(%.2f,%.2f) "
             "trackright=(%.2f,%.2f) align=%.2f lat_u=%.0f road=%.0f lateral=%.2f(%d) "
-            "bearing=%.0f reach=%.1f pan=%.2f speed=%.1f\n",
+            "pred=%.2f horizon=%.0f pan=%.2f speed=%.1f\n",
             state.checkpoint, static_cast<double>(arc), static_cast<double>(state.forwardX),
             static_cast<double>(state.forwardZ), static_cast<double>(trackX),
             static_cast<double>(trackZ), static_cast<double>(rightX),
             static_cast<double>(rightZ), static_cast<double>(alignment),
             static_cast<double>(lateralUnits), static_cast<double>(realDistance),
-            static_cast<double>(lateral), haveLateral ? 1 : 0, static_cast<double>(bearingDeg),
-            static_cast<double>(reachWidths), static_cast<double>(pan),
-            static_cast<double>(state.speed));
+            static_cast<double>(lateral), haveLateral ? 1 : 0,
+            static_cast<double>(predictedFraction), static_cast<double>(horizonUnits),
+            static_cast<double>(pan), static_cast<double>(state.speed));
 }
 
 // Where on the course the player is. The game's own checkpoint index is preferred over searching
@@ -196,7 +222,6 @@ void Reset() {
     g_courseSignature = 0;
     g_timing = false;
     ForgetCourse();
-    ResetRaceState();
 }
 
 void InvalidateCourseMap() {
@@ -256,17 +281,38 @@ void Tick() {
 
     // The real road edges, measured a couple of stations per tick until the course is covered.
     EdgeMap::Tick(g_map);
-    // And once they are, the line is stood back on the asphalt wherever the course authored it off
-    // the road - the item route follows what shells fly over, not what a kart can drive.
-    if (EdgeMap::Ready() && !g_map.RoadShifted()) {
-        g_map.ApplyRoadShift(EdgeMap::Shifts());
-    }
 
-    const float dtSec = StepSeconds();
+    const float stepSec = StepSeconds();
     RaceState& state = ReadRaceState();
     state.speedPerSecond = state.speed * GuestFramesPerSecond();
+    state.frameSec = 1.0f / GuestFramesPerSecond();
+    // Behind the pause menu the game advances no time, so neither may any cue timer.
+    const float dtSec = state.paused ? 0.0f : stepSec;
+    // The cue renderer works in whole guest frames too, and takes their duration from here rather
+    // than measuring the host's.
+    if (state.frameSec > 0.0f) {
+        audio::CueService::Instance().SetFramePeriod(state.frameSec);
+    }
 
     LogStateChange(state);
+
+    // A race restarted on the same course keeps the course signature, so ForgetCourse never runs
+    // and the finish would already be spoken - and the lap and position suppressed - on lap one.
+    if ((state.valid && !g_prevValid) || (state.driving && g_prevFinished)) {
+        ForgetRace();
+    }
+    g_prevValid = state.valid;
+    g_prevFinished = state.finished;
+
+    // Once the edges are known the line is stood back on the asphalt wherever the course authored
+    // it off the road - the item route follows what shells fly over, not what a kart can drive.
+    // Deferred to a moment where moving the line under the kart cannot teleport the guide: the kart
+    // not driving, or a lap boundary, whichever comes first.
+    const bool lapChanged = g_lastShiftLap >= 0 && state.lap != g_lastShiftLap;
+    g_lastShiftLap = state.lap;
+    if (EdgeMap::Ready() && !g_map.RoadShifted() && (!state.driving || lapChanged)) {
+        g_map.ApplyRoadShift(EdgeMap::Shifts());
+    }
 
     const bool geometry = state.valid && g_map.Loaded();
     // The services are called even when there is nothing to read, because that is how they know to
@@ -280,13 +326,19 @@ void Tick() {
     g_driveAssist.Tick(state, g_map, g_handedness, station, dtSec);
     // The steering guide's only output, applied to the game's own engine note. When not guiding
     // the engine is handed back to the game rather than pinned to the centre.
-    const bool guiding = state.driving && RuntimeConfigFile::AccessibilitySteeringStrength() > 0;
+    //
+    // The pan is written as an ABSOLUTE placement, replacing the game's own, so it is only claimed
+    // when there is a real line to steer along. Without the geometry the assist has nothing to aim
+    // at and outputs a centred zero, and that zero would sit on the engine for the whole race,
+    // destroying the camera-relative placement a sighted player hears.
+    const bool guiding = geometry && g_map.RouteBased() && g_handedness.Known() && state.driving &&
+                         RuntimeConfigFile::AccessibilitySteeringStrength() > 0;
     g_enginePan.Apply(state, g_driveAssist.SteeringPan(), guiding);
     // Volume, unlike the pan, applies to every kart - the rivals' knob is the whole point.
     g_kartVolume.Tick(state);
     g_rouletteVolume.Tick(state);
     LogTelemetry(state, g_map, station, g_driveAssist.SteeringPan(),
-                 g_driveAssist.LastBearingDegrees(), g_driveAssist.LastReachWidths());
+                 g_driveAssist.LastPredictedFraction(), g_driveAssist.LastHorizonUnits());
     g_trackLimits.Tick(state, g_map, g_handedness, station, dtSec);
     g_itemBeacon.Tick(state, g_map, g_handedness, station, dtSec);
 

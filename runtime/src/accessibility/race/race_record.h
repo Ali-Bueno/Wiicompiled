@@ -12,6 +12,10 @@ struct RaceState;
 // the assists still work and only what can be *said* is narrower.
 void FillRaceRecord(RaceState& state);
 
+// Drops the frame counter the pause test diffs against, so the first frame of a new race is not
+// compared with the last frame of the previous one.
+void ResetRaceRecord();
+
 }  // namespace a11y::race
 
 #endif  // MKW_ACCESSIBILITY_RACE_RACE_RECORD_H

@@ -16,24 +16,30 @@ constexpr int kChannels = 2;
 // Three frames of audio kept queued. The tick that refills this is one frame apart, so three
 // survives a hitch, and the resulting latency stays under the ~100 ms where a cue starts to feel
 // detached from what caused it.
-constexpr float kFrameSec = 1.0f / 60.0f;
 constexpr int kQueuedFrames = 3;
-constexpr int kTargetQueueSamples = static_cast<int>(kSampleRate * kFrameSec * kQueuedFrames);
 
-constexpr float kQuarterPi = 0.785398163397448f;
+// The guest runs at one of two video modes; anything outside that range is a stall being measured,
+// not a frame period, and must not turn into seconds of queued audio.
+constexpr float kMinFramePeriodSec = kDefaultFramePeriodSec;  // NTSC 60 Hz
+constexpr float kMaxFramePeriodSec = 1.0f / 50.0f;            // PAL 50 Hz, the mode RMCP01 runs at
+
+// Pitch is a playback-rate multiplier, so zero would freeze the read position: a sample-backed
+// one-shot would never reach its end and never stop. Two octaves down is the lowest transposition
+// a cue is still recognizable at, and it bounds a one-shot at four times its own length.
+constexpr float kMinPlaybackRate = 0.25f;
+
 constexpr float kInt16Peak = 32767.0f;
-
-// Equal-power pan, so a centred cue does not sit in the ~3 dB hole a linear crossfade leaves.
-void PanGains(float pan, float& left, float& right) {
-    const float angle = (std::clamp(pan, -1.0f, 1.0f) + 1.0f) * kQuarterPi;
-    left = std::cos(angle);
-    right = std::sin(angle);
-}
 
 // Per-sample envelope step for a ramp of the given length. A zero-length ramp steps straight to
 // the target rather than dividing by zero.
 float StepFor(float seconds) {
     return seconds > 0.0f ? 1.0f / (seconds * static_cast<float>(kSampleRate)) : 1.0f;
+}
+
+// The interpolator reads the position and the source sample after it, so this is the last position
+// that still produces audio - and the one a re-steered voice must be rewound from.
+bool SamplePlayable(const Sample& sample, float pos) {
+    return pos >= 0.0f && static_cast<size_t>(pos) + 1 < sample.mono.size();
 }
 
 }  // namespace
@@ -103,11 +109,15 @@ void CueService::Apply(Voice& voice, const CueSpec& spec, bool sustained, bool r
     voice.stopping = false;
     voice.attackStep = StepFor(spec.attackSec);
     voice.releaseStep = StepFor(spec.releaseSec);
-    voice.sample = SampleBank::Instance().Get(spec.sample);
-    voice.rate = std::max(spec.pitch, 0.0f);
-    if (restart) {
+    const Sample* sample = SampleBank::Instance().Get(spec.sample);
+    voice.rate = std::max(spec.pitch, kMinPlaybackRate);
+    // Rewind on a restart, on a re-activation from silence, on a swap of sample, and whenever the
+    // position is no longer playable: a voice parked past its own end never advances again.
+    if (restart || !voice.active || sample != voice.sample ||
+        (sample != nullptr && !SamplePlayable(*sample, voice.samplePos))) {
         voice.samplePos = 0.0f;
     }
+    voice.sample = sample;
     if (!sustained) {
         voice.remainingSec = spec.durationSec;
     }
@@ -118,12 +128,34 @@ void CueService::Apply(Voice& voice, const CueSpec& spec, bool sustained, bool r
         voice.amp = voice.targetAmp;
         voice.gainL = voice.targetGainL;
         voice.gainR = voice.targetGainR;
-        if (restart) {
-            voice.phase = 0.0f;
-            voice.env = 0.0f;
-        }
+        // Re-activating from silence is a start, not a re-steer: a stale phase, envelope or read
+        // position left behind by the previous cue would click, swallow the attack, or stay mute.
+        voice.phase = 0.0f;
+        voice.env = 0.0f;
         voice.active = true;
     }
+}
+
+void CueService::SetFramePeriod(float seconds) {
+    mFrameSec = std::clamp(seconds, kMinFramePeriodSec, kMaxFramePeriodSec);
+}
+
+int CueService::TargetQueueFrames() const {
+    return static_cast<int>(static_cast<float>(kSampleRate) * mFrameSec *
+                            static_cast<float>(kQueuedFrames));
+}
+
+// Samples still owed to the longest release ramp in flight. Rendering fewer would leave a
+// half-faded tone at the end of the queue - exactly the click the ramp exists to avoid.
+int CueService::ReleaseTailFrames() const {
+    int tail = 0;
+    for (const Voice& voice : mVoices) {
+        if (!voice.active || !voice.stopping || voice.releaseStep <= 0.0f) {
+            continue;
+        }
+        tail = std::max(tail, static_cast<int>(std::ceil(voice.env / voice.releaseStep)));
+    }
+    return tail;
 }
 
 void CueService::PlayOneShot(CueChannel channel, const CueSpec& spec) {
@@ -157,6 +189,7 @@ void CueService::Render(int frames) {
     mMix.assign(static_cast<size_t>(frames) * kChannels, 0.0f);
     const float invFrames = 1.0f / static_cast<float>(frames);
     const float secPerSample = 1.0f / static_cast<float>(kSampleRate);
+    float loudestVoice = 0.0f;  // limiter knee, so one voice alone passes through untouched
 
     for (Voice& voice : mVoices) {
         if (!voice.active) {
@@ -168,6 +201,7 @@ void CueService::Render(int frames) {
         const float ampStep = (voice.targetAmp - voice.amp) * invFrames;
         const float gainLStep = (voice.targetGainL - voice.gainL) * invFrames;
         const float gainRStep = (voice.targetGainR - voice.gainR) * invFrames;
+        float voicePeak = 0.0f;
 
         for (int i = 0; i < frames; ++i) {
             // A sample plays to its own end; only synthesized one-shots run on the timer.
@@ -184,8 +218,8 @@ void CueService::Render(int frames) {
             float raw = 0.0f;
             if (voice.sample) {
                 const std::vector<float>& pcm = voice.sample->mono;
-                const size_t index = static_cast<size_t>(voice.samplePos);
-                if (index + 1 < pcm.size()) {
+                if (SamplePlayable(*voice.sample, voice.samplePos)) {
+                    const size_t index = static_cast<size_t>(voice.samplePos);
                     const float frac = voice.samplePos - static_cast<float>(index);
                     raw = pcm[index] + (pcm[index + 1] - pcm[index]) * frac;
                     voice.samplePos += voice.rate;
@@ -198,8 +232,11 @@ void CueService::Render(int frames) {
                 voice.phase -= std::floor(voice.phase);
             }
             const float sample = raw * voice.amp * voice.env;
-            mMix[static_cast<size_t>(i) * kChannels] += sample * voice.gainL;
-            mMix[static_cast<size_t>(i) * kChannels + 1] += sample * voice.gainR;
+            const float left = sample * voice.gainL;
+            const float right = sample * voice.gainR;
+            mMix[static_cast<size_t>(i) * kChannels] += left;
+            mMix[static_cast<size_t>(i) * kChannels + 1] += right;
+            voicePeak = std::max(voicePeak, std::max(std::fabs(left), std::fabs(right)));
 
             voice.freq += freqStep;
             voice.amp += ampStep;
@@ -214,11 +251,13 @@ void CueService::Render(int frames) {
         if (voice.stopping && voice.env <= 0.0f) {
             voice.active = false;
         }
+        loudestVoice = std::max(loudestVoice, voicePeak);
     }
 
     mOut.resize(mMix.size());
+    const float knee = std::min(loudestVoice, 1.0f);
     for (size_t i = 0; i < mMix.size(); ++i) {
-        mOut[i] = static_cast<int16_t>(std::clamp(mMix[i], -1.0f, 1.0f) * kInt16Peak);
+        mOut[i] = static_cast<int16_t>(SoftLimit(mMix[i], knee) * kInt16Peak);
     }
 }
 
@@ -241,7 +280,10 @@ void CueService::Tick() {
     // Bounded by the queue depth itself: what is already queued can only reduce this, so a stall
     // cannot turn into a burst of stale audio.
     const int queuedFrames = queuedBytes / (kChannels * static_cast<int>(sizeof(int16_t)));
-    const int needed = kTargetQueueSamples - queuedFrames;
+    int needed = TargetQueueFrames() - queuedFrames;
+    // A release must land in the queue whole; stopping halfway leaves a truncated tone to be heard
+    // if the queue then drains before the next tick.
+    needed = std::max(needed, ReleaseTailFrames());
     if (needed <= 0) {
         return;
     }

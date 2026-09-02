@@ -37,6 +37,10 @@ struct KclFloor {
 // alone called 11 of kinoko's 13 fall-bounded stations a wall, so what is measured is what is out
 // there, not what the boundary is made of.
 struct KclEdge {
+    // False when this side had no room to sweep at all - a reach under one march step, which a
+    // negative reach also is. Nothing else in the struct means anything then: a one-step "open"
+    // edge reported from such a side is a measurement that never happened.
+    bool valid = false;
     float distance = 0.0f;                // furthest sample that was still Road
     KclSurface cause = KclSurface::None;  // what ended the road; None means the floor ran out
     bool openEnded = false;               // still Road at the sampling limit

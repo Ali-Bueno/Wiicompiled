@@ -3,6 +3,7 @@
 
 #include "accessibility/a11y_log.h"
 #include "accessibility/audio/cue_service.h"
+#include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/heading.h"
@@ -19,7 +20,7 @@ using audio::Waveform;
 
 // The scale every edge cue is graded on, whichever geometry produced it: 1.0 is where the warning
 // starts and 1.5 is the edge itself. Keeping one scale is what lets the real-road measurement and
-// the KMP-corridor fallback share the hysteresis, the ratchet and the urgency ramp below.
+// the KMP-corridor fallback share the hysteresis, the rate limit and the urgency ramp below.
 constexpr float kEdgeOnset = 1.0f;
 
 // Releases lower than it engages. Without that, a kart riding the boundary crosses it several
@@ -31,19 +32,14 @@ constexpr float kEdgeRelease = 0.9f;
 // on the real road it is the edge itself, since the onset margin is measured to the edge.
 constexpr float kEdgeUrgencySpan = 0.5f;
 
-// Each beep re-arms this much further out - a quarter of the span per renewed warning (perceptual
-// spacing). Drifting OUTWARD keeps warning; holding a stable line goes quiet.
+// One perceptual step on that scale - a quarter of the span. It is the unit shared by "the grade
+// fell back, re-arm lower" and "the grade jumped a whole step in one frame, beep now".
 constexpr float kEdgeStep = 0.25f;
 
 // Past this the beeps have nothing left to add: urgency has already saturated, so every further
-// beep is the same beep, and the surface tone owns "the road is gone" from here. A real lap logged
-// seven identical beeps at offsets of 7 to 8.65 corridors, all at full urgency.
+// beep is the same beep, and the surface tone owns "the road is gone" from here - except for the
+// two edge kinds that tone can never cover (see KindHasNoTone).
 constexpr float kEdgeBeepCeiling = kEdgeOnset + kEdgeUrgencySpan;
-
-// Where the warning starts is a share of the REAL road left on that side - kEdgeOnsetRealFraction
-// (edge_map.h, shared with the line repair), so the quiet band is the inner half of the road and
-// the warning is the outer half. The authored KMP corridor used to narrow it and no longer does:
-// see EdgeMagnitude.
 
 constexpr float kEdgeHz = 300.0f;
 constexpr float kEdgeBeepAmplitude = 0.38f;
@@ -54,64 +50,46 @@ constexpr float kEdgePitchMax = 1.8f;
 constexpr float kEdgeTonePitch = 1.8f;
 constexpr float kEdgePan = 0.85f;
 
-// The beeps close up as the edge nears, which is the urgency signal.
-constexpr float kIntervalFarSec = 0.45f;
-constexpr float kIntervalNearSec = 0.09f;
-
-// Surface flap guard. The game's own off-road multiplier flickers frame to frame where the kart
-// rides a boundary or bounces over it, and each flicker restarted the held tone and re-armed an
-// immediate beep, defeating the interval limiter. One beep interval at full urgency is the
-// shortest gap this cue family already treats as two separate events, so anything shorter is flap
-// rather than a change of surface.
-constexpr float kEdgeSurfaceDebounceSec = kIntervalNearSec;
-
-// The nearest route segment can jump to a different part of the course - the far side of one of
-// Mushroom Gorge's gaps, the other level of a crossover - and the offset's sign jumps with it: a
-// real lap logged -4.68 to +6.89 inside one beep interval. A kart cannot cross the line that fast,
-// so the panned side only follows a new sign once it has held for longer than such a jump lasts.
-constexpr float kEdgeSideHoldSec = kIntervalNearSec * 2.0f;
-
 // A drop sounds an octave under grass, on a saw rather than a triangle. An octave is the clearest
-// pitch relation there is, so "vas a caer" and "hierba" can never be taken for one another, and
-// urgency still rides the same pitch ramp and the same closing interval inside each family.
+// pitch relation there is, so the two can never be taken for one another, and urgency still rides
+// the same pitch ramp and the same closing interval inside each family.
 constexpr float kEdgeFallOctave = 0.5f;
 
-constexpr float kDemoEdgeSec = 0.8f;  // demo: long enough to hear the held tone's timbre clearly
-constexpr float kDemoEdgePan = 0.7f;  // demo: el lado del peligro suena a la derecha
+constexpr float kDemoEdgeSec = 0.8f;  // demo: long enough to hear the held tone timbre clearly
+constexpr float kDemoEdgePan = 0.7f;  // demo: the danger side sounds to the right
 
 bool KindIsFall(EdgeKind kind) { return kind == EdgeKind::Fall; }
 
-// The cue's grade for the kart's position, on the shared scale. `realDistance` is the road left on
-// the side the kart is drifting towards and `corridor` the station's authored half-width; without
-// a measured road the corridor offset IS the grade, which is the behaviour before the KCL edges.
-//
-// The fallback is clamped to the same ceiling the measured path saturates at. Raw, it reaches 7-8
-// on a corridor the kart is far outside, so a station whose probe failed would hand the ratchet and
-// the pitch ramp a number from a different scale and the cue would change character mid-drift.
-//
-// The onset was `min(corridor, kEdgeOnsetRealFraction * realDistance)` - the authored corridor
-// allowed to narrow the band, on the reading that the CPU's lane is the lane. It is the third
-// place that reading has broken on a course whose corridor field is degenerate, after the aim
-// distance and the road width, and it broke worst here. On the course the player reported the
-// corridor is 79 units against 750 of real road each side, so the onset was `min(79, 375) = 79`:
-// **671 of those 750 units were silent and the entire warning happened in the last 79.** Every
-// edge beep in that race logged `margin` 68-72, which at racing speed is not a warning, and the
-// player hit the barrier through a long bend while steering it correctly - "giro bien a la
-// izquierda y aun asi me acabo chocando".
-//
-// So the corridor is gone from here. The measured road is the one width this module trusts, and
-// half of it is already a lane-like band by construction - no second, unreliable input needed.
-float EdgeMagnitude(float lateralUnits, float offset, bool haveReal, float realDistance) {
-    const float fallback = std::min(std::fabs(offset), kEdgeBeepCeiling);
-    if (!haveReal) {
-        return fallback;
-    }
-    const float margin = realDistance - std::fabs(lateralUnits);
-    const float onsetMargin = kEdgeOnsetRealFraction * realDistance;
-    if (!(onsetMargin > 0.0f)) {
-        return fallback;
-    }
+// The held tone needs offRoad && onGround, and neither a wall scrape (still on road) nor a fall
+// (airborne) ever satisfies it. For those two the beeps cannot hand over at the ceiling.
+bool KindHasNoTone(EdgeKind kind) { return kind == EdgeKind::Wall || kind == EdgeKind::Fall; }
+
+float GradeForMargin(float margin, float onsetMargin) {
     return kEdgeOnset + (1.0f - margin / onsetMargin) * kEdgeUrgencySpan;
+}
+
+float BeepIntervalSec(float nearness) {
+    return kIntervalFarSec + (kIntervalNearSec - kIntervalFarSec) * nearness;
+}
+
+// The cue grade on the shared scale. The warning band is a share of the REAL road left on the side
+// being approached - kEdgeOnsetRealFraction (edge_map.h, shared with the line repair) - so the
+// quiet band is the inner half of the road and the warning is the outer half. Without a measured
+// road the KMP corridor offset IS the grade, clamped to the same ceiling the measured path
+// saturates at, so a failed probe cannot hand the ramp a number from a different scale.
+//
+// The corridor is deliberately not allowed to narrow the band: on the course the player reported it
+// is 79 units against 750 of real road each side, which left 671 of those 750 silent.
+float EdgeMagnitude(float offset, bool haveReal, float realDistance, float margin,
+                    float predictedMargin) {
+    const float onsetMargin = kEdgeOnsetRealFraction * realDistance;
+    if (!haveReal || !(onsetMargin > 0.0f)) {
+        return std::min(std::fabs(offset), kEdgeBeepCeiling);
+    }
+    // The predicted margin is what the grade rides, which is what makes the lead a TIME. The
+    // positional grade stays as the floor, so a kart parked beside the edge still warns.
+    return std::max(GradeForMargin(margin, onsetMargin),
+                    GradeForMargin(predictedMargin, onsetMargin));
 }
 
 }  // namespace
@@ -126,59 +104,19 @@ void PlayEdgeCueDemo() {
     CueService::Instance().PlayOneShot(CueChannel::Edge, tone);
 }
 
-// The surface flag has to read the same way for a debounce window before the tone starts, and again
-// before it stops, so a boundary flicker cannot chop the tone into a warble.
-bool TrackLimits::SurfaceSaysOffRoad(bool offRoad, float dtSec) {
-    if (offRoad == mHoldingTone) {
-        mSurfaceHoldSec = 0.0f;
-        return mHoldingTone;
-    }
-    mSurfaceHoldSec += dtSec;
-    if (mSurfaceHoldSec < kEdgeSurfaceDebounceSec) {
-        return mHoldingTone;
-    }
-    mSurfaceHoldSec = 0.0f;
-    return offRoad;
-}
-
-// The ear both edge cues pan to. A side that disagrees with the one the player is hearing has to
-// last kEdgeSideHoldSec before it is adopted, which a nearest-segment jump never does.
-bool TrackLimits::PannedSideIsRight(bool towardsRight, bool haveOffset, float dtSec) {
-    if (!haveOffset) {
-        return mSideRight;  // nothing measured this frame: keep the ear the player last heard
-    }
-    if (!mSideKnown) {
-        mSideKnown = true;
-        mSideRight = towardsRight;
-        mSideHoldSec = 0.0f;
-        return mSideRight;
-    }
-    if (towardsRight == mSideRight) {
-        mSideHoldSec = 0.0f;
-        return mSideRight;
-    }
-    mSideHoldSec += dtSec;
-    if (mSideHoldSec >= kEdgeSideHoldSec) {
-        mSideRight = towardsRight;
-        mSideHoldSec = 0.0f;
-    }
-    return mSideRight;
-}
-
 void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
-                             const Handedness& handedness, int station, float dtSec) {
-    // The kart's continuous arc, resolved once: it anchors the lateral offset AND the edge
-    // lookup below, so both describe the same point on the same line.
+                             const Handedness& handedness, int station, float dtSec, bool offRoad) {
+    // The kart continuous arc, resolved once: it anchors the lateral offset AND the edge lookup
+    // below, so both describe the same point on the same line.
     const float arc = map.ArcOfPosition(state.x, state.z, station);
     float offset = 0.0f;
     float nearX = 0.0f, nearZ = 0.0f, corridor = 0.0f;
     const bool haveOffset =
         map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offset, &nearX, &nearZ, &corridor);
 
-    // Which EAR the danger is in, in the kart's own frame - the same derivation the steering
-    // guide uses, through the same Handedness object. Taking the sign from the route frame
-    // instead named the wrong ear whenever the kart pointed more than 90 degrees off the track,
-    // which is exactly the spun-out moment the off-road tone plays most.
+    // Which EAR the danger is in, in the kart own frame - the same derivation the steering guide
+    // uses, through the same Handedness object. Taking the sign from the route frame instead named
+    // the wrong ear whenever the kart pointed more than 90 degrees off the track.
     float rightX = 0.0f, rightZ = 0.0f;
     handedness.RightVector(state, rightX, rightZ);
     const bool towardsRight =
@@ -186,25 +124,29 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     const bool panRight = PannedSideIsRight(towardsRight, haveOffset, dtSec);
 
     // WHICH edge is being approached is a question about the track, not about where the kart is
-    // pointed, so it takes the route frame's own sign while the ear above keeps the kart's. Read
-    // at the kart's continuous arc, not at its station: a stepped edge distance would jump the
-    // onset and the grade every time a station boundary went by.
+    // pointed, so it takes the route frame own sign while the ear above keeps the kart one. Read at
+    // the kart continuous arc, not at its station: a stepped edge distance would jump the onset and
+    // the grade every time a station boundary went by.
+    const bool edgeOnRight = offset > 0.0f;
     float realDistance = 0.0f;
     EdgeKind kind = EdgeKind::Unknown;
     const bool haveReal =
-        haveOffset && EdgeMap::SideAtArc(map, arc, offset > 0.0f, realDistance, kind);
+        haveOffset && EdgeMap::SideAtArc(map, arc, edgeOnRight, realDistance, kind);
     mNearEdgeKind = haveReal ? kind : EdgeKind::Unknown;
 
-    // The held tone means "actually off the road", and the game's own surface multiplier is the
-    // authority on that - the AI corridor is narrower than the road, so holding the tone on
-    // geometry alone made it sound on nearly every sample of a play-test. Panned to the danger
-    // side, the same ear the engine leans to under the player's steer-away convention.
-    //
-    // `state.offRoad` alone is not enough: UpdateOffroad stops writing it while airborne, so it
-    // keeps reporting the last surface the kart touched. Gated on `onGround` here rather than left
-    // for the debounce alone to absorb, since a real jump can clear it; the debounce below still
-    // does its job for a bump too brief to register as a real air phase.
-    if (SurfaceSaysOffRoad(state.offRoad && state.onGround, dtSec)) {
+    // How fast the margin on THAT side is shrinking: the kart speed projected on the route
+    // across-track axis, signed positive towards the edge being graded. Units per SECOND, which is
+    // what turns the lead below into a time instead of a distance that halves with engine class.
+    float acrossX = 0.0f, acrossZ = 0.0f;
+    map.RightVectorAtArc(arc, acrossX, acrossZ);
+    const float closingRate = state.speedPerSecond *
+                              (state.forwardX * acrossX + state.forwardZ * acrossZ) *
+                              (edgeOnRight ? 1.0f : -1.0f);
+
+    // The held tone means "actually off the road", and the game own surface multiplier is the
+    // authority on that - already debounced by the caller. Panned to the danger side, the same ear
+    // the engine leans to under the player steer-away convention.
+    if (offRoad) {
         CueSpec tone;
         tone.shape = KindIsFall(mNearEdgeKind) ? Waveform::Saw : Waveform::Triangle;
         tone.frequencyHz =
@@ -214,17 +156,15 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
             tone.pan = panRight ? kEdgePan : -kEdgePan;
         }
         if (!mHoldingTone) {
-            // Temporary. A real lap's log could not say whether any beep preceded the off-road
-            // tone - the margin the edge cue actually gives is unmeasurable without this. Remove
-            // with the other cue diagnostics once the KCL-backed edges are calibrated.
+            // Temporary, with the other cue diagnostics: the margin the beeps actually gave before
+            // the road ran out is unmeasurable without this line.
             RT_LOGF(RT_TAG_A11Y, "edge tone ON: offset=%.2f kind=%s\n",
                     static_cast<double>(offset), EdgeKindName(mNearEdgeKind));
         }
         CueService::Instance().SetSustained(CueChannel::Edge, tone);
         mHoldingTone = true;
         // The approach state is left exactly as it was: clearing it here made every return to the
-        // road re-arm an immediate beep, so a kart bouncing over a boundary beeped every other
-        // frame instead of once per interval. Only a genuine return inside kEdgeRelease disarms it.
+        // road re-arm an immediate beep. Only a genuine return inside kEdgeRelease disarms it.
         return;
     }
     if (mHoldingTone) {
@@ -237,15 +177,23 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     }
 
     const float lateralUnits = offset * corridor;
-    const float magnitude = EdgeMagnitude(lateralUnits, offset, haveReal, realDistance);
+    const float margin = realDistance - std::fabs(lateralUnits);
+    // Where the kart will be one anticipation horizon from now, the same budget the steering guide
+    // spends. Only closing counts: moving away must never make the warning louder.
+    const float predictedMargin = margin - std::max(closingRate, 0.0f) * AnticipationSeconds();
+    const float magnitude = EdgeMagnitude(offset, haveReal, realDistance, margin, predictedMargin);
 
     // The two grades agree on their thresholds but not on how fast they move through them, so a
-    // switch between them re-arms the ratchet: carrying a level set by the other measurement over
-    // would either hold the cue silent or fire it at once.
+    // switch between them re-arms the limiter and must not read as a surge.
     if (haveReal != mGradeIsReal) {
         mGradeIsReal = haveReal;
         mBeepLevel = kEdgeOnset;
+        mLastMagnitude = magnitude;
     }
+    // A whole perceptual step crossed inside ONE frame is the emergency no rate limit may swallow.
+    // Only meaningful mid-approach; entering the band arms its own immediate beep below.
+    const bool surge = mNearEdge && (magnitude - mLastMagnitude) > kEdgeStep;
+    mLastMagnitude = magnitude;
 
     if (mNearEdge) {
         mNearEdge = magnitude >= kEdgeRelease;
@@ -261,27 +209,36 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
         return;
     }
 
-    // Coming back toward the lane re-arms the ratchet lower, so a renewed drift outward warns
-    // again instead of staying armed at the worst excursion of the lap.
-    if (magnitude < mBeepLevel - kEdgeStep) {
-        mBeepLevel = std::max(kEdgeOnset, magnitude + kEdgeStep);
-    }
-
-    if (magnitude >= kEdgeBeepCeiling) {
-        return;  // saturated: the surface tone says the rest, and repeating this one says nothing
-    }
-
     const float nearness = std::clamp((magnitude - kEdgeOnset) / kEdgeUrgencySpan, 0.0f, 1.0f);
+    const float interval = BeepIntervalSec(nearness);
 
-    mBeepTimer -= dtSec;
-    if (mBeepTimer > 0.0f) {
+    // At the ceiling the beeps normally hand over to the surface tone - but that tone never sounds
+    // for a wall or a fall, so those two keep beeping at the near interval and saturated pitch
+    // until the kart is back inside the release band, instead of going silent at the worst moment.
+    const bool saturated = magnitude >= kEdgeBeepCeiling;
+    const bool holdAtCeiling = saturated && KindHasNoTone(mNearEdgeKind);
+    if (saturated && !holdAtCeiling) {
         return;
     }
-    if (magnitude < mBeepLevel) {
-        return;  // not getting closer to the edge - a stable line off the lane stays quiet
+
+    // Coming back toward the lane re-arms the limiter lower, so a renewed drift outward warns
+    // again instead of staying armed at the worst excursion of the lap.
+    if (magnitude < mBeepLevel - kEdgeStep) {
+        mBeepLevel = std::max(kEdgeOnset, magnitude);
     }
-    mBeepLevel = magnitude + kEdgeStep;
-    mBeepTimer = kIntervalFarSec + (kIntervalNearSec - kIntervalFarSec) * nearness;
+
+    // The hold is re-derived from the CURRENT nearness every frame rather than latched by the beep
+    // that armed it: latched far, the whole warning at 200cc was one beep before the road ran out.
+    mBeepTimer = std::clamp(mBeepTimer - dtSec, 0.0f, interval);
+    if (mBeepTimer > 0.0f && !surge) {
+        return;
+    }
+    // A stable line off the lane stays quiet; a grade that keeps rising keeps beeping.
+    if (magnitude < mBeepLevel && !surge && !holdAtCeiling) {
+        return;
+    }
+    mBeepLevel = magnitude;
+    mBeepTimer = interval;
 
     // Brief, panned to the side being left - the same side language as the held tone. A drop and a
     // grass shoulder are two different sounds, because they are two different mistakes.
@@ -294,14 +251,14 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     beep.pan = panRight ? kEdgePan : -kEdgePan;
     beep.durationSec = kEdgeBeepSec;
     CueService::Instance().PlayOneShot(CueChannel::Edge, beep);
-    // Temporary, same reason as the tone log above: the real edge distance and the margin left are
-    // what the next lap's log calibrates kEdgeOnsetRealFraction against.
+    // Temporary, same reason as the tone log above: the margin left and the margin predicted are
+    // what the next lap log calibrates the anticipation horizon against.
     RT_LOGF(RT_TAG_A11Y,
-            "edge beep: station=%d kind=%s real=%.0f lateral=%.0f margin=%.0f grade=%.2f "
-            "nearness=%.2f side=%s measured=%s\n",
+            "edge beep: station=%d kind=%s real=%.0f lateral=%.0f margin=%.0f predicted=%.0f "
+            "closing=%.0f grade=%.2f nearness=%.2f side=%s measured=%s\n",
             station, EdgeKindName(mNearEdgeKind), static_cast<double>(realDistance),
-            static_cast<double>(lateralUnits),
-            static_cast<double>(realDistance - std::fabs(lateralUnits)),
+            static_cast<double>(lateralUnits), static_cast<double>(margin),
+            static_cast<double>(predictedMargin), static_cast<double>(closingRate),
             static_cast<double>(magnitude), static_cast<double>(nearness),
             panRight ? "right" : "left", towardsRight ? "right" : "left");
 }

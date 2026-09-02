@@ -63,8 +63,9 @@ constexpr float kBeaconIntervalSec = 0.55f;
 constexpr float kBeaconVolumeNear = 0.5f;
 constexpr float kBeaconVolumeFar = 0.18f;
 
-// Pan leans fully by this bearing; beyond it the box is simply "that side".
-constexpr float kBeaconFullLeanRad = 0.785398163397448f;  // 45 degrees
+// The lean curve below is sin(bearing) * cos(bearing), which peaks at 45 degrees - the bearing that
+// has always meant full pan. Dividing by its value there keeps that bearing at exactly full pan.
+constexpr float kBeaconLeanPeak = 0.5f;  // sin(pi/4) * cos(pi/4), the peak of the lean curve
 
 // Once the box is behind, the blip drops in pitch instead of vanishing, so passing one is something
 // the player hears rather than something that just stops.
@@ -186,6 +187,13 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
         return;
     }
 
+    // Before the object walk, not after it: NearestBox is 200 guest reads, and on all but the one
+    // frame in an interval where a blip is actually due its result is thrown away.
+    mBlipTimer -= dtSec;
+    if (mBlipTimer > 0.0f) {
+        return;
+    }
+
     const float range = map.MeanSpacing() * kBeaconRangeStations;
     float boxX = 0.0f, boxZ = 0.0f;
     if (range <= 0.0f || !NearestBox(state, range, boxX, boxZ)) {
@@ -195,11 +203,6 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
 
     float bearing = 0.0f;
     if (!handedness.BearingTo(state, boxX, boxZ, bearing)) {
-        return;
-    }
-
-    mBlipTimer -= dtSec;
-    if (mBlipTimer > 0.0f) {
         return;
     }
     mBlipTimer = kBeaconIntervalSec;
@@ -214,7 +217,11 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
     const float behind = std::clamp(-ahead, 0.0f, 1.0f);
     const float pitch = 1.0f - behind * (1.0f - kBeaconPassedPitch);
     const float amplitude = kBeaconVolumeFar + (kBeaconVolumeNear - kBeaconVolumeFar) * nearness;
-    const float pan = std::clamp(bearing / kBeaconFullLeanRad, -1.0f, 1.0f);
+    // Pan on sin, not on the bearing itself: a box directly behind reads as a bearing near +/-pi
+    // and would slam to a hard side. Folding in the forward component sends it to centre instead,
+    // where the dropped pitch is what says "behind".
+    const float lean = std::sin(bearing) * std::max(ahead, 0.0f) / kBeaconLeanPeak;
+    const float pan = std::clamp(lean, -1.0f, 1.0f);
     CueService::Instance().PlayOneShot(CueChannel::ItemBox, MakeBeaconBlip(pitch, amplitude, pan));
 }
 

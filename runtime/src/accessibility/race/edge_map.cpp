@@ -47,6 +47,9 @@ int g_shiftedStations = 0;
 // Stations where the safe band and the step limit could not both be honoured - the road moves
 // sideways faster than the line is allowed to follow. Zero on every course measured so far.
 int g_tightStations = 0;
+// Whether the course map has already said what it did with the shifts. Until it has, every measured
+// distance reads from the authored stations, which is where the map still has them.
+bool g_shiftConfirmed = false;
 // Temporary. The worst single tick the build cost, so the next lap says whether the amortised
 // probe is really invisible. Remove with the other cue diagnostics.
 double g_worstTickMs = 0.0;
@@ -97,31 +100,45 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     //
     // Bounded by the station's own KMP corridor: that is the game's own statement of how far the
     // line may legitimately sit from this point, so a correction inside it is still the route,
-    // while a station needing more than that is a bad measurement rather than a bad line.
-    float shift = 0.0f;
-    onRoadOut = KclRoad::FindRoad(cx, y, cz, rx, rz, map.HalfWidth(station), shift);
+    // while a station needing more than that is a bad measurement rather than a bad line. A custom
+    // course can author a corridor narrower than a single march step, though - 79 units on the
+    // Retro Rewind course this was measured on - and the search then takes zero steps and repairs
+    // nothing at all. One station spacing stands in there: it is the course's own length scale, and
+    // a point needing to move further than the distance to its own neighbour is a bad point rather
+    // than a misplaced line.
+    float searchLimit = map.HalfWidth(station);
+    if (searchLimit < kKclLateralStepUnits) {
+        searchLimit = std::max(searchLimit, map.MeanSpacing());
+    }
+    float probeShift = 0.0f;
+    onRoadOut = KclRoad::FindRoad(cx, y, cz, rx, rz, searchLimit, probeShift);
     // Each side stops where this station's own stretch of course does, so a paved infield joined to
     // the road cannot be measured as road (CourseMap::LateralReach). Taken about the authored point
-    // and then carried across the repair: a probe that starts `shift` to the right has that much
-    // less of the stretch left on its right and that much more on its left.
-    const float leftReach = map.LateralReach(station, false) + shift;
-    const float rightReach = map.LateralReach(station, true) - shift;
-    const KclEdges edges = KclRoad::ProbeEdges(cx + rx * shift, y, cz + rz * shift, rx, rz,
-                                               leftReach, rightReach);
+    // and then carried across the repair: a probe that starts `probeShift` to the right has that
+    // much less of the stretch left on its right and that much more on its left.
+    const float leftReach = map.LateralReach(station, false) + probeShift;
+    const float rightReach = map.LateralReach(station, true) - probeShift;
+    const KclEdges edges = KclRoad::ProbeEdges(cx + rx * probeShift, y, cz + rz * probeShift, rx,
+                                               rz, leftReach, rightReach);
     if (!edges.valid) {
         return false;
     }
-    out.leftKind = ClassifyEdge(edges.left);
-    out.rightKind = ClassifyEdge(edges.right);
-    out.leftDistance = edges.left.distance;
-    out.rightDistance = edges.right.distance;
+    // Stated from the station the course AUTHORED, not from wherever the sweep stood. The probe
+    // offset used to be handed to CentreLine as a finished move and added to its answer afterwards,
+    // which put the whole of it outside the step cap; folding it into the distances instead makes
+    // the solver's own answer the TOTAL move and puts all of it under the cap. A side the authored
+    // point already stands outside reads negative here, which is the truth about that point.
+    out.leftKind = edges.left.valid ? ClassifyEdge(edges.left) : EdgeKind::Unknown;
+    out.rightKind = edges.right.valid ? ClassifyEdge(edges.right) : EdgeKind::Unknown;
+    out.leftDistance = edges.left.valid ? edges.left.distance - probeShift : 0.0f;
+    out.rightDistance = edges.right.valid ? edges.right.distance + probeShift : 0.0f;
     // Centring is deliberately NOT done here: it needs the neighbouring stations, which are not
-    // measured yet. See CentreLine below.
-    out.shift = shift;
+    // measured yet. See CentreLine below, which owns `shift` outright.
+    out.shift = 0.0f;
     // Each side stands on its own: a line point hard against one boundary still measured the other
     // correctly, and that is the side the player is about to need.
-    out.leftValid = out.leftDistance >= kEdgeMapMinDistance;
-    out.rightValid = out.rightDistance >= kEdgeMapMinDistance;
+    out.leftValid = out.leftKind != EdgeKind::Unknown && out.leftDistance >= kEdgeMapMinDistance;
+    out.rightValid = out.rightKind != EdgeKind::Unknown && out.rightDistance >= kEdgeMapMinDistance;
     return out.leftValid && out.rightValid;
 }
 
@@ -141,65 +158,110 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
 // (route_graph.cpp). Three derived quantities and no tunables:
 //
 //   band  Where the track-limit cue is silent: kEdgeOnsetRealFraction of the local half-width clear
-//         on each side. The same constant, so "centred" and "not warning" are one statement. The
-//         band is always exactly one half-width wide and always contains the road's own centre, so
-//         on its own it can never be empty.
+//         on each side, and never less than one march step, which is the hard "not on the edge"
+//         floor. The same constant, so "centred" and "not warning" are one statement. Only a side
+//         with a real EDGE states a bound: an Open side ran out of sweep with road still under it,
+//         so it knows neither where the road ends nor how wide it is, and counting its cap distance
+//         as a measurement inflated the half-width and pushed the line towards unresolved ground.
 //   free  An apron or a junction measures a wide open space that is not a lane, and centring
 //         station 5 of that course by 1,150 units put the player off a bridge approach while they
 //         sat exactly on the line. An apron is a LOCAL MAXIMUM of road width, which takes no
-//         constant to recognise. Those stations, and any the sweep could not read, get no band:
-//         they neither demand a move nor block one, so a correction can ramp across them.
-//   step  A lateral step d between stations spaced s apart turns the line by about 2*atan(d/s), and
-//         the curve pass reads anything below kTightnessEnter as straight, so neighbouring shifts
-//         differing by at most s*tan(kTightnessEnter/2) can never be graded as a corner. The first
-//         version put this cap on the shift ITSELF, which limited how FAR the repair could reach
-//         instead of how FAST: a lone station could not take its neighbours with it, so that corner
-//         entry ended at 450 units of margin rather than clear of the band. Bounding the step lets
-//         a whole stretch slide as one.
+//         constant to recognise - compared against the nearest stations that measured a width at
+//         all, since an unmeasured neighbour reads as zero and would make its neighbours trivial
+//         maxima. Those stations demand no move; they still refuse one that would put them on an
+//         edge they did measure.
+//   step  A lateral step d across a segment of length s turns the line by about 2*atan(d/s), and
+//         the curve pass reads anything below kTightnessEnter as straight, so a step under
+//         s*tan(kTightnessEnter/2) can never be graded as a corner. Per SEGMENT, because the curve
+//         pass grades each station against its own span rather than the lap mean. The first version
+//         put this cap on the shift ITSELF, which limited how FAR the repair could reach instead of
+//         how FAST: a lone station could not take its neighbours with it, so that corner entry
+//         ended at 450 units of margin rather than clear of the band. Bounding the step lets a
+//         whole stretch slide as one.
 //
 // The bands are propagated around the loop until they stop changing, which folds the step limit
 // into them. After that each station's answer is just the point of its band nearest to not moving
 // at all, and that pick is automatically within one step of its neighbours' because clamping is
 // 1-Lipschitz in the bounds it clamps to - so the shape of the course is preserved by construction
-// rather than by dilution. A band that propagation empties is a place where the road moves sideways
-// faster than the line may follow: those take the midpoint, are counted, and ApplyRoadShift's
-// corner check stays as the backstop.
+// rather than by dilution. Every bound therefore has to be in place BEFORE propagation: a clamp
+// applied to the answers afterwards silently breaks that guarantee. A band that propagation empties
+// is a place where the road moves sideways faster than the line may follow: those take the
+// midpoint, are counted, and ApplyRoadShift's corner check stays as the backstop.
 //
-// The edges follow the move analytically rather than by a second sweep: between two measured
-// boundaries the road is the straight line this module already treats it as.
+// The answer is the whole move from the authored station, applied once by CourseMap::ApplyRoadShift
+// and reflected back into the measured distances only if that succeeds (EdgeMap::ConfirmShift).
 void CentreLine(const CourseMap& map) {
     const int count = static_cast<int>(g_edges.size());
     g_tightStations = 0;
     if (count < 3) {
         return;
     }
-    const float maxStep = map.MeanSpacing() * std::tan(kTightnessEnter * 0.5f);
     constexpr float kFree = std::numeric_limits<float>::infinity();
 
+    // maxStep[i] bounds |shift(i) - shift(i-1)|, from the length of the segment between them.
+    const float slope = std::tan(kTightnessEnter * 0.5f);
+    std::vector<float> maxStep(static_cast<std::size_t>(count), 0.0f);
+    for (int i = 0; i < count; ++i) {
+        maxStep[static_cast<std::size_t>(i)] = map.ArcForward(i - 1, i) * slope;
+    }
+
+    // An Open side is a cap, not an edge, so it neither says how wide the road is nor where the
+    // line may sit.
+    auto bounded = [](const StationEdges& e, bool right) {
+        const EdgeKind kind = e.Kind(right);
+        return kind != EdgeKind::Unknown && kind != EdgeKind::Open;
+    };
+
     // Every decision reads the road as SWEPT, so a station already moved cannot change what its
-    // neighbour thinks the road there is.
+    // neighbour thinks the road there is. Zero means "no width measured here", never "no road".
     std::vector<float> halfWidth(static_cast<std::size_t>(count), 0.0f);
     for (int i = 0; i < count; ++i) {
         const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
-        halfWidth[static_cast<std::size_t>(i)] = (e.leftDistance + e.rightDistance) * 0.5f;
+        const bool haveLeft = bounded(e, false);
+        const bool haveRight = bounded(e, true);
+        float width = 0.0f;
+        if (haveLeft && haveRight) {
+            width = (e.leftDistance + e.rightDistance) * 0.5f;  // the road's own half-width
+        } else if (haveLeft) {
+            width = e.leftDistance;  // one edge is all this station can say about its road
+        } else if (haveRight) {
+            width = e.rightDistance;
+        }
+        halfWidth[static_cast<std::size_t>(i)] = width > 0.0f ? width : 0.0f;
     }
+
+    // The nearest station either way that measured a width at all, so an unread stretch is stepped
+    // over rather than counted as a road of width zero.
+    auto measuredNeighbour = [&](int from, int step) {
+        for (int k = 1; k < count; ++k) {
+            const int at = ((from + step * k) % count + count) % count;
+            const float w = halfWidth[static_cast<std::size_t>(at)];
+            if (w > 0.0f) {
+                return w;
+            }
+        }
+        return 0.0f;
+    };
 
     std::vector<float> lo(static_cast<std::size_t>(count), -kFree);
     std::vector<float> hi(static_cast<std::size_t>(count), kFree);
     for (int i = 0; i < count; ++i) {
         const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
-        if (!(e.leftDistance > 0.0f) || !(e.rightDistance > 0.0f)) {
-            continue;
-        }
         const float here = halfWidth[static_cast<std::size_t>(i)];
-        const float prev = halfWidth[static_cast<std::size_t>((i + count - 1) % count)];
-        const float next = halfWidth[static_cast<std::size_t>((i + 1) % count)];
-        if (here > prev && here > next) {
-            continue;
+        const float prev = measuredNeighbour(i, -1);
+        const float next = measuredNeighbour(i, +1);
+        const bool apron = here > 0.0f && prev > 0.0f && next > 0.0f && here > prev && here > next;
+        // A free station keeps only the hard floor; a constrained one also keeps the cue's own
+        // silent band clear.
+        const float clear = (apron || !(here > 0.0f))
+                                ? kEdgeMapMinDistance
+                                : std::max(kEdgeOnsetRealFraction * here, kEdgeMapMinDistance);
+        if (bounded(e, false)) {
+            lo[static_cast<std::size_t>(i)] = -e.leftDistance + clear;
         }
-        const float clear = kEdgeOnsetRealFraction * here;
-        lo[static_cast<std::size_t>(i)] = -e.leftDistance + clear;
-        hi[static_cast<std::size_t>(i)] = e.rightDistance - clear;
+        if (bounded(e, true)) {
+            hi[static_cast<std::size_t>(i)] = e.rightDistance - clear;
+        }
     }
 
     // Both chains are monotone - lo only rises, hi only falls - and bounded by the widest band, so
@@ -211,18 +273,16 @@ void CentreLine(const CourseMap& map) {
         for (int i = 0; i < count; ++i) {
             const std::size_t here = static_cast<std::size_t>(i);
             const std::size_t back = static_cast<std::size_t>((i + count - 1) % count);
-            const float raised = lo[back] - maxStep;
-            const float lowered = hi[back] + maxStep;
-            if (raised > lo[here]) { lo[here] = raised; changed = true; }
-            if (lowered < hi[here]) { hi[here] = lowered; changed = true; }
+            const float step = maxStep[here];
+            if (lo[back] - step > lo[here]) { lo[here] = lo[back] - step; changed = true; }
+            if (hi[back] + step < hi[here]) { hi[here] = hi[back] + step; changed = true; }
         }
         for (int i = count - 1; i >= 0; --i) {
             const std::size_t here = static_cast<std::size_t>(i);
             const std::size_t ahead = static_cast<std::size_t>((i + 1) % count);
-            const float raised = lo[ahead] - maxStep;
-            const float lowered = hi[ahead] + maxStep;
-            if (raised > lo[here]) { lo[here] = raised; changed = true; }
-            if (lowered < hi[here]) { hi[here] = lowered; changed = true; }
+            const float step = maxStep[ahead];
+            if (lo[ahead] - step > lo[here]) { lo[here] = lo[ahead] - step; changed = true; }
+            if (hi[ahead] + step < hi[here]) { hi[here] = hi[ahead] + step; changed = true; }
         }
         if (!changed) {
             break;
@@ -230,32 +290,21 @@ void CentreLine(const CourseMap& map) {
     }
 
     for (int i = 0; i < count; ++i) {
-        StationEdges& e = g_edges[static_cast<std::size_t>(i)];
         const float low = lo[static_cast<std::size_t>(i)];
         const float high = hi[static_cast<std::size_t>(i)];
         float shift = 0.0f;
         if (low > high) {
-            shift = (low + high) * 0.5f;  // both ends finite: a free station's band never empties
+            shift = (low + high) * 0.5f;  // both ends finite: only a two-sided band can empty
             ++g_tightStations;
         } else {
             shift = std::max(low, std::min(high, 0.0f));
         }
         if (!std::isfinite(shift)) {
-            continue;
-        }
-        // The measured sides bound the move too, for the empty-band case that ignored the band.
-        if (e.leftDistance > 0.0f && e.rightDistance > 0.0f) {
-            const float floorShift = -e.leftDistance + kEdgeMapMinDistance;
-            const float ceilShift = e.rightDistance - kEdgeMapMinDistance;
-            if (floorShift <= ceilShift) {
-                shift = std::max(floorShift, std::min(ceilShift, shift));
-            }
-            e.leftDistance += shift;
-            e.rightDistance -= shift;
+            continue;  // no bound at all on this station: leave it exactly where it was authored
         }
         // Recorded even where the sides did not read: the shift is what keeps the line continuous,
         // and a free station dropping its ramp back to zero is the step the cap exists to prevent.
-        e.shift += shift;
+        g_edges[static_cast<std::size_t>(i)].shift = shift;
     }
 }
 
@@ -306,20 +355,25 @@ void LogSummary(const CourseMap& map) {
     offsets.reserve(g_edges.size());
     int unrepairable = 0;
     int inWarningBand = 0;
+    // Reported as the repair PROPOSES to leave the road, since the map has not yet said whether it
+    // keeps the shift: the summary describes the line that is about to be offered, not the one the
+    // sweep measured from.
     for (int i = 0; i < stations; ++i) {
         const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
+        const float left = e.leftDistance + e.shift;
+        const float right = e.rightDistance - e.shift;
         if (i < static_cast<int>(g_lineOnRoad.size()) && g_lineOnRoad[static_cast<std::size_t>(i)] == 0) {
             ++unrepairable;
         }
         if (e.leftValid && e.rightValid) {
-            offsets.push_back(std::fabs((e.rightDistance - e.leftDistance) * 0.5f));
+            offsets.push_back(std::fabs((right - left) * 0.5f));
         }
         // The player's spec, counted directly: after the repair, how many line points still stand
         // closer to an edge than the track-limit cue's own onset. Anything but zero is a place
         // where a centred pan does not mean a place the kart fits.
-        if (e.leftDistance > 0.0f && e.rightDistance > 0.0f) {
-            const float half = (e.leftDistance + e.rightDistance) * 0.5f;
-            if (std::min(e.leftDistance, e.rightDistance) < kEdgeOnsetRealFraction * half) {
+        if (left > 0.0f && right > 0.0f) {
+            const float half = (left + right) * 0.5f;
+            if (std::min(left, right) < kEdgeOnsetRealFraction * half) {
                 ++inWarningBand;
             }
         }
@@ -344,15 +398,16 @@ void LogSummary(const CourseMap& map) {
     // other cue diagnostics once the onset fraction is calibrated.
     for (int i = 0; i < stations; ++i) {
         const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
+        const float left = e.leftDistance + e.shift;
+        const float right = e.rightDistance - e.shift;
         const bool onRoad = i >= static_cast<int>(g_lineOnRoad.size()) ||
                             g_lineOnRoad[static_cast<std::size_t>(i)] != 0;
         RT_LOGF(RT_TAG_A11Y,
                 "edge row: %d | %.0f | %s | %.0f | %s | to-centre %.0f | shift %.0f | kmp %.0f | %s\n",
-                i, static_cast<double>(e.leftDistance), EdgeKindName(e.leftKind),
-                static_cast<double>(e.rightDistance), EdgeKindName(e.rightKind),
-                static_cast<double>((e.rightDistance - e.leftDistance) * 0.5f),
-                static_cast<double>(e.shift), static_cast<double>(map.HalfWidth(i)),
-                onRoad ? "on-road" : "off-road");
+                i, static_cast<double>(left), EdgeKindName(e.leftKind),
+                static_cast<double>(right), EdgeKindName(e.rightKind),
+                static_cast<double>((right - left) * 0.5f), static_cast<double>(e.shift),
+                static_cast<double>(map.HalfWidth(i)), onRoad ? "on-road" : "off-road");
     }
 }
 
@@ -386,6 +441,7 @@ void EdgeMap::Reset() {
     g_shifts.clear();
     g_shiftedStations = 0;
     g_tightStations = 0;
+    g_shiftConfirmed = false;
     KclObjects::Forget();
     // The course mesh too: its header is cached against a controller pointer that a new course can
     // land on again, and this is the one place that knows the course is gone.
@@ -397,6 +453,25 @@ bool EdgeMap::Ready() { return g_edgeMapState == EdgeMapState::Done && !g_edges.
 float EdgeMap::MedianHalfWidth() { return g_medianHalfWidth; }
 
 const std::vector<float>& EdgeMap::Shifts() { return g_shifts; }
+
+void EdgeMap::ConfirmShift(bool applied) {
+    if (g_shiftConfirmed) {
+        return;
+    }
+    g_shiftConfirmed = true;
+    if (!applied) {
+        return;  // the stations never moved, and the distances already read from where they are
+    }
+    for (StationEdges& e : g_edges) {
+        // Analytically rather than by a second sweep: between two measured boundaries the road is
+        // the straight line this module already treats it as.
+        e.leftDistance += e.shift;
+        e.rightDistance -= e.shift;
+        e.leftValid = e.leftKind != EdgeKind::Unknown && e.leftDistance >= kEdgeMapMinDistance;
+        e.rightValid = e.rightKind != EdgeKind::Unknown && e.rightDistance >= kEdgeMapMinDistance;
+    }
+    MeasureMedianHalfWidth();  // the repair changed which sides read, so the scale is restated
+}
 
 bool EdgeMap::AnyShift() { return g_shiftedStations > 0; }
 

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "accessibility/a11y_log.h"
+#include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/heading.h"
@@ -13,104 +14,53 @@
 namespace a11y::race {
 namespace {
 
-constexpr float kDegToRad = 3.14159265358979f / 180.0f;
-
-// No centre deadzone, continuous pan (Top Speed's design), smoothed so the lean glides. The
-// smoother is a time constant, not a per-frame step: ~100 ms is the 60 fps equivalent of the
-// play-tested 0.15-per-frame filter, and expressing it in seconds keeps the feel - and the
-// player's by-ear tuning - identical when the frame rate is not 60.
+// Continuous pan, smoothed so the lean glides: ~100 ms is the 60 fps equivalent of the play-tested
+// 0.15-per-frame filter, kept as a time so the feel survives any frame rate.
 constexpr float kPanSmoothTauSec = 0.1f;
 
-// The yaw estimate gets its own, far shorter window. It is a difference of unit vectors, so what
-// it has to reject is a single-frame outlier, and three samples is the shortest window that
-// outvotes one; sharing the pan's 100 ms put TWO lags in series on the anticipation path - the one
-// signal that has to arrive early. Cost measured on the 08-31 logs: the player's correction weave
-// runs at 0.46 Hz, where a 100 ms lag turns the estimate by 16 degrees of phase and so injects
-// about 9 degrees of bearing error that is pure filter, against an on-the-line residual of 17-26.
-// In SAMPLES, not seconds, because the quantisation it rejects is per-sample.
+// The yaw estimate is a difference of unit vectors, so what it has to reject is a single-frame
+// outlier; three samples is the shortest window that outvotes one.
 constexpr float kYawSmoothSamples = 3.0f;
 
-// Nearly dead astern, the aim point's side is numerical noise around the atan2 seam, and each
-// flip would glide the pan through zero - the one value that must mean "on the line". Past this
-// bearing the guide holds whichever side it already leans to until the kart rotates back.
-constexpr float kAsternRad = 150.0f * kDegToRad;
+// Silent centre: a prediction inside this share of the real half-width is "fine, keep going". Half
+// the edge cue's own onset band, so the guide always speaks before the edge cue does.
+constexpr float kQuietFraction = kEdgeOnsetRealFraction * 0.5f;
 
-// How far ahead the pursuit point sits, as a TIME. Anticipation is what the player spends to hear
-// a cue, decide and move the stick, and that budget is in seconds, not in road lengths - so this
-// leads by seconds exactly as the corner calls already do (LeadSeconds, drive_curves.cpp).
-//
-// It was written as a distance in road widths, which silently shrinks the warning as the course
-// gets faster: a logged Retro Rewind session measured `steering_look_ahead = 15` buying 1333 units
-// on a 1300-unit half-width, against 6590 units/s at racing pace - 0.20 s, less than the time it
-// takes to react to a sound at all, and the top of the knob only reached 0.79 s.
-//
-// The range is that same widths range converted at that session's own racing speed, so a course
-// driven at vanilla pace keeps the feel it was tuned with and only a faster one changes:
-//   near  0.5 widths -> 0.5 * 1300 / 6590 = 0.10 s   ("pure present tense")
-//   far   4.0 widths -> 4.0 * 1300 / 6590 = 0.79 s   (the "about a second" the design always meant)
-constexpr float kAimNearSec = 0.10f;
-constexpr float kAimFarSec = 0.79f;
+// Below this total turn the constant-yaw arc is its straight limit; in float, 1 - cos loses the
+// digits before the arc differs from the chord by a unit at any racing speed.
+constexpr float kStraightTurnRad = 1e-3f;
 
-// The floor, still on the course's road scale: a pure time horizon collapses onto the kart's own
-// nose at a standstill or after a spin - the exact "no anticipation at all" failure the road-width
-// fix just removed - and after a spin the aim point's side IS the recovery signal.
-constexpr float kAimNearWidths = 0.5f;
-
-// The bearing to the pursuit point that means full lean: MK64's play-tested 45 degrees, kept
-// because the consumer (an ear) is the same. `steering_sensitivity` sweeps a factor of two around
-// it - 90 degrees at 0, 22.5 at 100 - so 50 IS the MK64 guide.
-constexpr float kFullLeanAnchorRad = 45.0f * kDegToRad;
+// The smallest change in pan worth a diagnostic line - a twentieth of the range, about the smallest
+// step the ear places at all.
+constexpr float kLogStep = 0.05f;
 
 float Fraction(int percent) {
     return std::clamp(static_cast<float>(percent), 0.0f, 100.0f) / 100.0f;
 }
 
-// Top Speed's own pan at the road edge: 25 of the +/-100 DirectSound range (its Car.cpp:1198-1234,
-// pan = (relPos - 0.5)^2 * 100, so an edge at relPos 0 or 1 gives 0.5^2 * 100 = 25). Keeping that
-// ratio is what makes this feel like the game the player knows: at the default gain the real edge
-// leans the engine a quarter of full lean, and the square keeps the centre nearly flat.
-constexpr float kTopSpeedEdgeFraction = 0.25f;
-
-// The knob value that reproduces Top Speed's ratio exactly; the knob scales linearly around it, so
-// 100 doubles the lean at the edge and 0 turns the term off.
-constexpr int kPositionGainDefault = 50;
-
-// The smallest change in the position lean worth a diagnostic line - a twentieth of the pan range,
-// which is about the smallest step the ear places at all.
-constexpr float kPositionLogStep = 0.05f;
-
-// Forza's pan mapping is not linear in the bearing: it carries an exponent
-// (`assistpanningextent_curveexp`) and a ceiling (`assistpanningextent_maxextent`) - see
-// docs/forza-blind-driving-assist.md §2. The ceiling here is already `steering_strength`; this is
-// the exponent, and it exists because a logged race measured a 200-unit drift moving the pan 0.068
-// of 1.0 with the reachable maximum at 0.52 - nearly all the useful signal in the bottom few
-// percent of the range. An exponent BELOW one expands exactly that region.
-//
-// `steering_response = "squared"` was tried and rejected by ear; squared is this same knob on the
-// wrong side of 1, compressing the small errors further rather than opening them out.
-//
-// The same factor-of-two sweep `steering_sensitivity` uses, anchored so 50 is the linear mapping
-// the player already tuned: 100 is the square root, 0 the square.
-constexpr float kPanCurveAnchorExp = 1.0f;
-
-float PanCurveExponent() {
-    return kPanCurveAnchorExp *
-           std::pow(2.0f,
-                    1.0f - 2.0f * Fraction(RuntimeConfigFile::AccessibilitySteeringPanCurve()));
+// Where the kart will be after `seconds` if it keeps its speed and its yaw rate: a circular arc,
+// or its straight limit. Speed carries the sign of travel, so reversing predicts behind.
+void FuturePosition(const RaceState& state, float rightX, float rightZ, float yawRate,
+                    float seconds, float& x, float& z) {
+    const float distance = state.speedPerSecond * seconds;
+    const float turn = yawRate * seconds;
+    float along = distance;
+    float side = 0.0f;
+    if (std::fabs(turn) >= kStraightTurnRad) {
+        const float radius = distance / turn;
+        along = radius * std::sin(turn);
+        side = radius * (1.0f - std::cos(turn));
+    }
+    x = state.x + state.forwardX * along + rightX * side;
+    z = state.z + state.forwardZ * along + rightZ * side;
 }
 
-// How hard the corner at `arc` is, as a multiplier on the guide's lean: 1.0 on a straight, and a
-// corner's own `intensity` inside one (1.0 at the game's corner threshold, a little over 3 at a
-// hairpin). Read at the AIM POINT rather than at the kart, so the accent arrives and fades with
-// the lean it deepens instead of stepping at the entry line - the guide already keeps one
-// anticipation horizon and this rides on it.
-float CurveAccentAt(const CourseMap& map, float arc) {
-    const Curve* curve = map.ActiveCurveAt(arc, 0.0f);
-    if (curve == nullptr || map.ArcSignedTo(arc, curve->entry) > 0.0f ||
-        map.ArcSignedTo(arc, curve->exit) <= 0.0f) {
-        return 1.0f;
+float WrapArc(float arc, float lapLength) {
+    if (lapLength <= 0.0f) {
+        return arc;
     }
-    return std::max(1.0f, curve->intensity);
+    arc = std::fmod(arc, lapLength);
+    return arc < 0.0f ? arc + lapLength : arc;
 }
 
 }  // namespace
@@ -121,13 +71,13 @@ void DriveAssist::Reset() {
     mLastForwardX = 0.0f;
     mLastForwardZ = 0.0f;
     mHaveLastForward = false;
-    mLastToward = 0.0f;
-    mLastPositionBucket = 0;
-    mLastPursuitBucket = 0;
-    mApproachEntry = -1;
-    mLastLateralUnits = 0.0f;
+    mLastPanSign = 0.0f;
+    mLastPredictedFraction = 0.0f;
+    mLastHorizonUnits = 0.0f;
+    mLastLogBucket = 0;
     mLastLap = -1;
     mActiveEntry = -1;
+    mApproachEntry = -1;
     mApproachBeeps = 0;
     mAnnounced = false;
     mPhase = 0;
@@ -135,338 +85,136 @@ void DriveAssist::Reset() {
     mChainAnnounced.clear();
 }
 
-// Works out the steering pan and leaves the answer in mSmoothedPan. It plays nothing: the pan is
-// applied to the game's own engine sound, which already carries speed in its pitch and loudness,
-// so adding a tone of our own would be a second engine over the first.
+// One quantity: the kart's lateral offset FROM THE LINE at the point it reaches one anticipation
+// horizon from now, if it keeps its speed and its turning, as a share of the real road on that
+// side. Zero means "you will be on the line" - on a straight pointing along it, or in a bend turning
+// at the bend's own rate. A corner ahead of a kart going straight shows up a full horizon early; a
+// kart correcting back too hard shows up on the far side BEFORE it crosses, which is what tells the
+// player when to stop correcting.
 //
-// WHAT THE SIGN MEANS - specified explicitly by the player, 2026-08-27: the engine marks the side
-// to steer AWAY from. "Cuando haya curva a la izquierda, el motor se panee a la derecha y
-// viceversa - así sé que tengo que regresar el kart al centro para no chocarme." A left-hander
-// carries the kart to the right outside, so the engine sits right and coming back to centre is
-// steering away from the sound. This is also the one direction language the rest of the mod
-// speaks: the edge beeps and the off-road tone already sound on the danger side. The opposite
-// preference (steer toward the sound) is `invert_steering_pan`.
-//
-// Pure pursuit, the model the MK64 mod took from Forza's 2023 Blind Driving Assist and the
-// player validated there: aim at a point ON the line a little way ahead, and the pan is the
-// signed bearing from the kart's nose to that point. Centre pan therefore MEANS "you are on the
-// line, pointing along it" - the player's own definition of the cue. One quantity, so position
-// error and heading error can never disagree; and after a spin the aim point is simply behind,
-// full lean, and following it turns the kart back down the course - the recovery the previous
-// two-term guide never gave (a session log showed 90% of samples off-corridor once the first
-// wall was hit).
+// Sign, specified by the player (2026-08-27): the engine marks the side the kart is heading for -
+// "curva a la izquierda -> motor a la derecha" - so steering away from the sound is the fix. The
+// edge beeps and the off-road tone speak the same language. `invert_steering_pan` flips it.
 void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                                  const Handedness& handedness, int station, float dtSec) {
     const float alpha = dtSec > 0.0f ? 1.0f - std::exp(-dtSec / kPanSmoothTauSec) : 0.0f;
     const float yawAlpha = 1.0f - std::exp(-1.0f / kYawSmoothSamples);
 
-    // How fast the kart is turning, in the same sign as every other cue: positive is toward the
-    // kart's right. Measured from the heading the state already reads - that vector times the
-    // scalar speed IS the velocity, so this is the curvature of the path being driven and not the
-    // chassis yaw a drift throws around. Smoothed on the guide's own time constant, because a
-    // one-tick difference of a unit vector is mostly quantisation.
+    // Yaw from the heading the state already reads: that vector times the speed IS the velocity,
+    // so this is the curvature of the path driven, not the chassis yaw a drift throws around.
     float kartRightX = 0.0f, kartRightZ = 0.0f;
     handedness.RightVector(state, kartRightX, kartRightZ);
-    if (mHaveLastForward && dtSec > 0.0f) {
+    if (mHaveLastForward && state.frameSec > 0.0f) {
         const float sinTurn =
             std::clamp(-(mLastForwardX * kartRightX + mLastForwardZ * kartRightZ), -1.0f, 1.0f);
-        const float sampled = std::asin(sinTurn) / dtSec;
-        mYawRate += (sampled - mYawRate) * yawAlpha;
+        mYawRate += (std::asin(sinTurn) / state.frameSec - mYawRate) * yawAlpha;
     }
     mLastForwardX = state.forwardX;
     mLastForwardZ = state.forwardZ;
     mHaveLastForward = true;
 
-    // The aim distance rides on the REAL road, the same width the position term grades against, so
-    // one setting means the same anticipation on every course. The KMP corridor is not a road
-    // width: on a Retro Rewind N64 course it measured 79 units against 1,100 of asphalt, which put
-    // the aim point under the kart's nose and left the guide with no anticipation at all.
-    const float realHalfWidth = EdgeMap::MedianHalfWidth();
-    const float kmpHalfWidth = map.MedianHalfWidth();
-    const float widthScale = realHalfWidth > 0.0f  ? realHalfWidth
-                             : kmpHalfWidth > 0.0f ? kmpHalfWidth
-                                                   : map.MeanSpacing();
-    const float lookAhead = Fraction(RuntimeConfigFile::AccessibilitySteeringLookAhead());
-    const float aimSeconds = kAimNearSec + (kAimFarSec - kAimNearSec) * lookAhead;
-    // Magnitude: the speed carries the sign of travel, and reversing must still aim up the course.
-    const float speed = std::fabs(state.speedPerSecond);
-    // One anticipation horizon for the whole guide: the pursuit term aims at the point this far
-    // along the line, and the position term grades the offset it predicts at that same point.
-    const float aimDistance = std::max(kAimNearWidths * widthScale, aimSeconds * speed);
-    const float aimWidths = widthScale > 0.0f ? aimDistance / widthScale : 0.0f;
-
-    const float arc = map.ArcOfPosition(state.x, state.z, station);
-    float targetX = 0.0f, targetZ = 0.0f;
-    float bearing = 0.0f;
-    // RouteBased, not Loaded: the checkpoint-midpoint fallback carries progress and corner shape
-    // but its midpoints can sit off the road entirely - aiming the engine at them would guide the
-    // player into whatever the quads happen to span.
-    const bool haveTarget = map.RouteBased() && widthScale > 0.0f &&
-                            map.PointAtArc(arc + aimDistance, targetX, targetZ) &&
-                            handedness.BearingTo(state, targetX, targetZ, bearing);
-    float bearingRaw = bearing;
-    float bearingRef = 0.0f;
-    if (haveTarget) {
-        // What the kart is ALREADY doing about the corner, subtracted, so that what remains is what
-        // it still has to do. Exact geometry and no constant: a kart turning at yaw rate w reaches a
-        // point T seconds ahead along its own arc, and the chord to that point makes an angle of
-        // exactly w*T/2 with its tangent. So w*T/2 is the bearing a kart tracking the line properly
-        // MUST have, and the difference is the steering ERROR.
-        //
-        // That is the player's own definition of the centre: "el centro tiene que significar que el
-        // jugador esta en el sitio correcto para no chocarse con los limites de pista Y SEGUIR
-        // COMPLETANDO LA CURVA". On the line but not yet turning is not such a place. The previous
-        // cut subtracted the ROAD's curvature instead of the KART's, which called it one: a kart
-        // pointing straight down a straight at a corner read as perfect until the corner had
-        // already begun, so the warning arrived WITH the corner instead of before it. Player,
-        // 2026-08-31, on 150cc: "siento que reacciono demasiado tarde... a ccs mas bajos va". At
-        // 100cc the spoken call alone still leaves room to recover; at 150 it does not.
-        //
-        // Subtracting the kart's own turning keeps every case the road-curvature version got right -
-        // straight and pointing straight is zero, a corner tracked correctly is zero at any
-        // tightness, and both terms still vanish together so no knob can move the centre - and
-        // restores the warning a full look-ahead before the corner, which is the part that was lost.
-        //
-        // The horizon is the guide's own: the aim distance's floor can only ever put the aim point
-        // FURTHER away in time, and extrapolating the kart's turning past where the guide itself
-        // looks would invent a corner the cue has not seen yet.
-        bearingRef = mYawRate * aimSeconds * 0.5f;
-        bearing -= bearingRef;
-    }
-    if (!haveTarget) {
-        // No trustworthy aim point this frame: fade to centre rather than hold a stale lean.
-        mSmoothedPan += (0.0f - mSmoothedPan) * alpha;
-        mLastBearingDeg = 0.0f;
-        mLastReachWidths = 0.0f;
-        return;
-    }
-
     const float strength = Fraction(RuntimeConfigFile::AccessibilitySteeringStrength());
-    const float sensitivity = Fraction(RuntimeConfigFile::AccessibilitySteeringSensitivity());
-    const float fullLean = kFullLeanAnchorRad * std::pow(2.0f, 1.0f - 2.0f * sensitivity);
-    // The corner's own tightness deepens the lean. Player, 2026-08-28: "durante las curvas, el
-    // paneo del motor debe acentuarse de acuerdo con la intensidad de la curva". It MULTIPLIES the
-    // pursuit bearing instead of adding an offset, so a straight is untouched and centred still
-    // means on the line - the one thing about the guide the player asked to keep. At the top of
-    // the knob a corner leans by its full intensity; at zero the guide is exactly what it was.
-    const float accent =
-        1.0f + Fraction(RuntimeConfigFile::AccessibilitySteeringCurveAccent()) *
-                   (CurveAccentAt(map, arc + aimDistance) - 1.0f);
-    // The response curve shapes the NORMALISED bearing, never the raw one, so it maps 0 to 0 and 1
-    // to 1: "on the line pointing along it" stays dead centre - the player's own definition of the
-    // cue - and full lean still means full lean. Only the distribution between the two moves.
-    // ...and it needs a silent centre, which it did not have. Top Speed's continuous pan grades the
-    // kart's real position; this grades a BEARING, and the 08-31 logs put that bearing at 17-26
-    // degrees while the player sat on the line - the weave's own residual, not a corner. So being
-    // centred was never audible as anything, and 153 returns to the line gave back the whole error
-    // (far-side over near-side amplitude 0.98, successive swings x1.10, a limit cycle at 0.46 Hz)
-    // because nothing told the player when to stop correcting: "quiero devolver el auto al centro
-    // pero me voy demasiado hacia el otro lado". The guide's own threshold for "this reads as
-    // straight" is the honest null - below it the curve pass does not call a corner, so the guide
-    // must not lean for one - and the remainder is rescaled so full lean still means full lean and
-    // only the useful range is spread out. Capped at half the range so no sensitivity can invert it.
-    const float deadband = std::min(kTightnessEnter, fullLean * 0.5f);
-    const float live = std::copysign(std::max(std::fabs(bearing) - deadband, 0.0f), bearing);
-    const float normalised = std::clamp(accent * live / (fullLean - deadband), -1.0f, 1.0f);
-    float toward =
-        std::copysign(std::pow(std::fabs(normalised), PanCurveExponent()), normalised);
-    const bool astern = std::fabs(bearing) > kAsternRad;
-    if (astern) {
-        // The aim point is behind: its side is the recovery signal and nothing else may dilute it.
-        toward = mLastToward < 0.0f ? -1.0f : 1.0f;
-    } else {
-        mLastToward = toward;
+    const float seconds = AnticipationSeconds();
+    const float arc = map.ArcOfPosition(state.x, state.z, station);
+
+    float pan = 0.0f;
+    float predicted = 0.0f;
+    float edge = 0.0f;
+    // RouteBased, not Loaded: the checkpoint-midpoint fallback carries progress and corner shape
+    // but its midpoints can sit off the road entirely.
+    bool have = map.RouteBased() && handedness.Known();
+    if (have) {
+        float roadFx = 0.0f, roadFz = 0.0f;
+        map.ForwardAtArc(arc, roadFx, roadFz);
+        const float along = roadFx * state.forwardX + roadFz * state.forwardZ;
+        if (along <= 0.0f) {
+            // Facing across or away from the course: no prediction means anything, and the last
+            // side leaned to is the recovery signal - hold it at full lean until the kart rotates back.
+            pan = mLastPanSign * strength;
+        } else {
+            const float horizon = state.speedPerSecond * seconds;
+            float futureX = 0.0f, futureZ = 0.0f;
+            FuturePosition(state, kartRightX, kartRightZ, mYawRate, seconds, futureX, futureZ);
+            // Measured in the road's frame where the kart actually lands, so a bend driven at its
+            // own rate predicts zero at any curvature.
+            int aimStation = station;
+            float t = 0.0f;
+            map.SegmentAtArc(WrapArc(arc + horizon, map.LapLength()), aimStation, t);
+            const float futureArc = map.ArcOfPosition(futureX, futureZ, aimStation);
+            float offset = 0.0f, corridor = 0.0f;
+            have = map.RoadOffsetAtArc(futureArc, futureX, state.y, futureZ, offset, nullptr,
+                                       nullptr, &corridor);
+            if (have) {
+                predicted = offset * corridor;
+                // Normalised by the REAL road on the side being approached, never by the KMP
+                // corridor, which measures 2-4x narrower than the asphalt.
+                EdgeKind kind = EdgeKind::Unknown;
+                if (!EdgeMap::SideAtArc(map, futureArc, predicted > 0.0f, edge, kind) &&
+                    !EdgeMap::SideAtArc(map, arc, predicted > 0.0f, edge, kind)) {
+                    edge = EdgeMap::MedianHalfWidth();
+                }
+                have = edge > 0.0f;
+            }
+            if (have) {
+                const float fraction = std::fabs(predicted) / edge;
+                const float live =
+                    std::min((std::max(fraction - kQuietFraction, 0.0f)) / (1.0f - kQuietFraction),
+                             1.0f);
+                // The side is a question about the track, the ear a question about the kart; with
+                // the kart facing along the course (`along > 0`) the two agree up to a sign.
+                float trackRightX = 0.0f, trackRightZ = 0.0f;
+                map.RightVectorAtArc(futureArc, trackRightX, trackRightZ);
+                const bool earRight =
+                    predicted * (trackRightX * kartRightX + trackRightZ * kartRightZ) > 0.0f;
+                pan = (earRight ? 1.0f : -1.0f) * live * strength;
+                if (live > 0.0f) {
+                    mLastPanSign = earRight ? 1.0f : -1.0f;
+                }
+                mLastPredictedFraction = predicted / edge;
+                mLastHorizonUnits = horizon;
+            }
+        }
     }
-    // Negated: `toward` points AT the line, and the player asked for the engine on the side to
-    // steer AWAY from ("curva a la izquierda -> motor a la derecha"). `steering_strength` governs
-    // this part and only this part, exactly as it did before the position term existed.
-    const float pursuitPan = -toward * strength;
-    // The position term deliberately does NOT share the aim horizon. That horizon multiplies the
-    // kart's heading error, so at the player's `steering_look_ahead = 100` (0.79 s, ~5,200 units at
-    // racing speed) one degree of yaw predicts 91 units of offset: six degrees consume the whole
-    // safe band and twelve saturate the term while the kart sits dead centre. Their log says so -
-    // on the line (|lat| <= 150 of an 1,100 half-width) the median pan was 0.327, and 0.316 in
-    // corners, which is where a drift is held. Lowering the knob cured the brusqueness and cost the
-    // anticipation with it ("con look ahead a 40 me fue peor; lo subí a 100, me fue mejor"),
-    // because one knob moved both. So the aim point keeps the full look-ahead - that is where the
-    // reaction time comes from - and the prediction extrapolates over the ROAD's own half-width,
-    // the very scale it is then normalised by. The term reads as "where you are, plus one road
-    // width of where you are pointing", and yaw's lever drops 4.7x on that course.
-    const PositionLean lean =
-        astern ? PositionLean{}
-               : PositionPan(state, map, handedness, arc, widthScale);
-    // The accent rides on BOTH terms, because the corner's difficulty is how little room it leaves:
-    // the same drift that is nothing on a long straight is most of the road in a hairpin, and the
-    // engine has to say so ("el motor tiene que acentuarse para decir cuan difícil es la curva").
-    // Both terms are zero when the kart is on the line pointing along it, so scaling them cannot
-    // move the centre - "cuando esté centrado pues tiene que ser una posición buena para ella".
-    // The position term is a statement about WHERE THE KART IS, so it gets the silent centre every
-    // other position cue in this mod already has: nothing while the kart is inside the band the
-    // track-limit cue stays quiet in and the line repair guarantees the line sits inside, opening
-    // out to full by that band's edge. One constant for all three, so "centred", "not warning" and
-    // "quiet" are one statement - the player's invariant, "la linea tiene que ser el sitio por el
-    // cual el jugador pueda pasar sin chocarse, por eso tiene que estar en el centro del paneo".
-    // The PREDICTED offset is in the test as well as the present one, so a kart sitting in the band
-    // while pointed out of it is still warned, and the term keeps the damping it exists for. The
-    // pursuit term is deliberately NOT gated by this: that one is the corner warning, and a kart
-    // centred on a straight with a corner coming must still hear it - the 150cc fix.
-    const float bandUnits = kEdgeOnsetRealFraction * widthScale;
-    const float onset =
-        bandUnits > 0.0f
-            ? std::clamp(std::max(std::fabs(lean.lateral), std::fabs(lean.predicted)) / bandUnits,
-                         0.0f, 1.0f)
-            : 1.0f;
-    const float pan = std::clamp(pursuitPan + accent * onset * lean.pan, -1.0f, 1.0f);
+    if (!have) {
+        // No trustworthy prediction this frame: fade to centre rather than hold a stale lean.
+        mLastPredictedFraction = 0.0f;
+        mLastHorizonUnits = 0.0f;
+    }
     mSmoothedPan += (pan - mSmoothedPan) * alpha;
-    mLastBearingDeg = bearing / kDegToRad;
-    mLastReachWidths = aimWidths;
 
-    // Temporary. This term shipped inaudible once because nothing logged what it was worth, and
-    // its masking of the pursuit term was only found by mining a race log for the two side by
-    // side - so the line carries the whole chain. `drift` is what the offset did that the kart's
-    // own crossing does not explain: on a straight, a kart holding its line against a weaving
-    // reference route shows a near-zero rate and a non-zero drift. Quantised on EITHER lean, so a
-    // pursuit swing against a steady position term still prints. Remove with the other cue
-    // diagnostics.
-    const float drift = lean.lateral - mLastLateralUnits - lean.rate * dtSec;
-    mLastLateralUnits = lean.lateral;
-    const int positionBucket = static_cast<int>(lean.pan / kPositionLogStep);
-    const int pursuitBucket = static_cast<int>(pursuitPan / kPositionLogStep);
-    if (positionBucket != mLastPositionBucket || pursuitBucket != mLastPursuitBucket) {
-        mLastPositionBucket = positionBucket;
-        mLastPursuitBucket = pursuitBucket;
-        const bool cancelling = lean.pan * pursuitPan < 0.0f &&
-                                std::fabs(lean.pan) > kPositionLogStep &&
-                                std::fabs(pursuitPan) > kPositionLogStep;
-        // Three decimals on the pans: the CANCEL flag tests the raw floats against
-        // kPositionLogStep, so two decimals printed a "+0.05" that looked like it should not have
-        // tripped it.
+    // Temporary: the guide's chain in one line, printed when the pan moves a step. Remove with the
+    // other cue diagnostics once the feel is settled.
+    const int bucket = static_cast<int>(pan / kLogStep);
+    if (bucket != mLastLogBucket) {
+        mLastLogBucket = bucket;
+        float offsetNow = 0.0f, corridorNow = 0.0f;
+        map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offsetNow, nullptr, nullptr,
+                            &corridorNow);
         RT_LOGF(RT_TAG_A11Y,
-                "position pan: lat=%.0f rate=%.0f pred=%.0f drift=%.0f u=%.2f onset=%.2f "
-                "braw=%.0f wturn=%.0f berr=%.0f pan=%+.3f pursuit=%+.3f total=%+.3f heard=%+.3f%s\n",
-                static_cast<double>(lean.lateral), static_cast<double>(lean.rate),
-                static_cast<double>(lean.predicted), static_cast<double>(drift),
-                static_cast<double>(lean.u), static_cast<double>(onset),
-                static_cast<double>(bearingRaw / kDegToRad),
-                static_cast<double>(bearingRef / kDegToRad),
-                static_cast<double>(bearing / kDegToRad), static_cast<double>(lean.pan),
-                static_cast<double>(pursuitPan), static_cast<double>(pan),
-                static_cast<double>(mSmoothedPan),
-                cancelling ? " CANCEL" : "");
+                "guide: lat=%.0f pred=%.0f edge=%.0f frac=%+.2f yaw=%+.2f horizon=%.0f "
+                "pan=%+.3f heard=%+.3f\n",
+                static_cast<double>(offsetNow * corridorNow), static_cast<double>(predicted),
+                static_cast<double>(edge), static_cast<double>(mLastPredictedFraction),
+                static_cast<double>(mYawRate), static_cast<double>(mLastHorizonUnits),
+                static_cast<double>(pan), static_cast<double>(mSmoothedPan));
     }
-}
-
-// Top Speed's position term, and only that: its pan is position-pure - pan = sign(d) * d^2 - with
-// no curvature anywhere in it. A corner is still felt, because understeer makes the lateral error
-// grow at a rate the corner's own severity sets and the square turns that growth into a hard lean.
-// The zero stays THE LINE rather than the road midpoint: "centre pan means you are on the line" is
-// the player's own definition of the cue and does not move.
-//
-// Returned in ABSOLUTE pan, to be added after the pursuit part has been scaled. Top Speed's 25 is
-// 25 of the full +/-100 hardware pan whatever else is set, and scaling it by the guide's strength
-// knob instead made it 0.25 * 0.27 = 0.07 of a pan at the player's own setting - a hairpin that
-// "seguía en el centro como si nada".
-DriveAssist::PositionLean DriveAssist::PositionPan(const RaceState& state, const CourseMap& map,
-                                                  const Handedness& handedness, float arc,
-                                                  float predictDistance) const {
-    PositionLean out;
-    const int gainKnob = RuntimeConfigFile::AccessibilitySteeringPositionGain();
-    float offset = 0.0f, corridor = 0.0f;
-    if (gainKnob <= 0 ||
-        !map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offset, nullptr, nullptr,
-                             &corridor)) {
-        return out;
-    }
-    out.lateral = offset * corridor;
-
-    // Graded on where the kart's heading is taking it, not on where it stands. A cue the player
-    // must hear, decide on and act on is a delayed loop, and a purely proportional term inside one
-    // overshoots: by the time the sound centres, the kart still carries the lateral speed that put
-    // it there, and it sails past - the player's "me paso de largo y me voy hacia el otro lado".
-    //
-    // Carried forward in the ROAD's frame, never in the world's. What is predicted is the kart's
-    // offset FROM THE LINE at the point it reaches, so a kart tracking a bend correctly predicts
-    // zero at any curvature and only a heading that disagrees with the road moves it.
-    //
-    // The previous cut projected the kart along its current heading in a straight WORLD line and
-    // measured that against the line at the aim point. That assumes the driver stops steering for
-    // the whole look-ahead, which inside a corner is exactly the wrong model: it charged a kart
-    // driving the bend perfectly the arc's own sagitta, d^2/2R. Measured on the player's log, with
-    // the kart on the line (|lateral| <= 100), the median predicted offset was 1041 units in a
-    // corner against 136 on a straight and the pan 0.507 against 0.044 - 11.5x for the same real
-    // position - and pred agreed in sign with pursuit in 39 of 39 corner samples, so the two piled
-    // up instead of describing different things. One sample read `lat=10 pred=1232 u=0.99
-    // total=+0.680`: ten units off the line, graded at 99% of the way to the edge. The player then
-    // does what the cue asks - come back until it centres - and it can only centre by driving to
-    // the inside edge, which is exactly what they reported: "solo puedo pasar yendo cerca del
-    // limite de la curva a la izquierda".
-    //
-    // This restores the module's own stated invariant, that both terms are zero when the kart is on
-    // the line pointing along it. The pursuit bearing stays non-zero through a bend and should -
-    // that one is the instruction to keep turning.
-    const float aimArc = arc + predictDistance;
-    float trackRightX = 0.0f, trackRightZ = 0.0f;
-    map.RightVectorAtArc(arc, trackRightX, trackRightZ);
-    // The sine of the kart's heading error against the road: the only part of its heading that
-    // carries it across the line.
-    const float across = state.forwardX * trackRightX + state.forwardZ * trackRightZ;
-    out.predicted = out.lateral + predictDistance * across;
-
-    // Diagnostic only: the instantaneous rate at which the kart crosses the line under its nose.
-    // The predictor needs no time and no speed - both cancel into the prediction distance.
-    out.rate = state.speedPerSecond * across;
-
-    // Side and ear flip TOGETHER with the prediction. Keying the ear off the present offset while
-    // the magnitude came from the predicted one would put the loudest warning in the wrong ear at
-    // exactly the moment the prediction crossed the line, which is the moment it exists for.
-    float kartRightX = 0.0f, kartRightZ = 0.0f;
-    handedness.RightVector(state, kartRightX, kartRightZ);
-    const bool predictedRight = out.predicted > 0.0f;
-    // Two frames, as in the edge cue: WHICH edge is approached is a question about the track, so it
-    // takes the route frame's sign at the kart's own arc - the frame the prediction is now
-    // expressed in; which EAR the lean belongs in is a question about the kart, so it goes through
-    // Handedness and stays right when the kart is spun.
-    const bool earRight =
-        out.predicted * (trackRightX * kartRightX + trackRightZ * kartRightZ) > 0.0f;
-
-    // Normalised by the REAL road where the prediction LANDS, and never by the KMP corridor, which
-    // measured 2-4x narrower than the asphalt and would saturate this term while the player is
-    // still on track. If that side was never measured there, the side the kart is on at its own
-    // arc still gives a road width to grade against - a scale from next door beats no cue at all.
-    float edgeDistance = 0.0f;
-    EdgeKind kind = EdgeKind::Unknown;
-    if (!EdgeMap::SideAtArc(map, aimArc, predictedRight, edgeDistance, kind) &&
-        !EdgeMap::SideAtArc(map, arc, offset > 0.0f, edgeDistance, kind)) {
-        return out;  // neither side measured here: pure pursuit beats a wrong scale
-    }
-    // Capped at the edge, because Top Speed's relPos is a fraction of the road and is bounded by
-    // construction. Unbounded it squares past 4 and saturates the lean on its own, erasing the
-    // pursuit bearing - and it does that precisely when the kart is off the road and the bearing
-    // is the one thing that still points the way back.
-    out.u = std::min(std::fabs(out.predicted) / edgeDistance, 1.0f);
-    const float gain = static_cast<float>(gainKnob) / static_cast<float>(kPositionGainDefault);
-    // ON the side the kart is heading for - the engine marks the side to steer AWAY from. Same
-    // convention as the pursuit part, one step further along: this is already pan, where that one
-    // is still `toward` and gets negated below.
-    out.pan = (earRight ? 1.0f : -1.0f) * out.u * out.u * kTopSpeedEdgeFraction * gain;
-    return out;
 }
 
 void DriveAssist::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,
                        int station, float dtSec) {
     if (!state.valid || !state.driving || !map.Loaded()) {
         mSmoothedPan = 0.0f;
+        mHaveLastForward = false;
         return;
     }
 
-    // Re-armed every lap, not only when the upcoming curve changes. On a course with a single
-    // corner - or an oval, which is one continuous curve - the curve ahead never changes, so
-    // without this the approach and traversal cues would fire on lap one and stay silent forever.
+    // Re-armed every lap: on an oval the curve ahead never changes, and without this the corner
+    // cues would fire on lap one and stay silent forever.
     if (state.lap != mLastLap) {
         mLastLap = state.lap;
-        mActiveEntry = -1;        // every corner is worth calling again on the next lap
-        mFinishedEntry = -1;      // including the one the last lap ended inside
-        mChainAnnounced.clear();  // including the ones spoken inside a chained call
+        mActiveEntry = -1;
+        mFinishedEntry = -1;
+        mChainAnnounced.clear();
     }
 
     UpdateSteering(state, map, handedness, station, dtSec);

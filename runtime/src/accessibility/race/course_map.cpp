@@ -5,6 +5,7 @@
 #include <cstddef>
 
 #include "accessibility/a11y_log.h"
+#include "accessibility/race/edge_map.h"
 #include "accessibility/race/kmp_reader.h"
 
 namespace a11y::race {
@@ -21,6 +22,12 @@ constexpr float kSearchArcFraction = 0.25f;
 // ENPT-by-index bug). Outside the band the route is rejected so the caller can try another source.
 constexpr float kLapRatioMin = 0.5f;
 constexpr float kLapRatioMax = 2.0f;
+
+// Both ends of a forward blend are unit vectors, so the blend is one unit long when they agree and
+// shrinks to zero as they oppose. A thousandth of that is a heading the lerp no longer states: the
+// two stations face within a rounding error of exactly opposite, and normalising past this point
+// amplifies float noise into a confident direction.
+constexpr float kForwardBlendMinLength = 1e-3f;
 
 float Hypot2(float dx, float dz) {
     return std::sqrt(dx * dx + dz * dz);
@@ -355,6 +362,14 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
     mHintWindow = std::min(widest + 1, bound);
 }
 
+float CourseMap::SpanAt(int i) const {
+    float px, pz, cx, cz, nx, nz;
+    Centre(i - 1, px, pz);
+    Centre(i, cx, cz);
+    Centre(i + 1, nx, nz);
+    return (Hypot2(cx - px, cz - pz) + Hypot2(nx - cx, nz - cz)) * 0.5f;
+}
+
 // Curvature at a station, signed positive to the right, in radians of heading change per unit of
 // travel - the reciprocal of the corner radius.
 float CourseMap::SignedTurnAt(int i) const {
@@ -440,19 +455,35 @@ bool CourseMap::SegmentForArc(float arc, int& station, float& t) const {
         arc += mLapLength;
     }
     const int n = StationCount();
-    for (int i = 0; i < n; ++i) {
-        const float start = mArc[i];
-        const float length = (i + 1 < n) ? (mArc[i + 1] - start) : (mLapLength - start);
-        if (arc > start + length) {
-            continue;  // the scan runs in arc order, so the first fit is the segment
-        }
-        station = i;
-        t = length > 0.0f ? std::clamp((arc - start) / length, 0.0f, 1.0f) : 0.0f;
-        return true;
-    }
-    station = n - 1;
-    t = 1.0f;
+    // mArc accumulates chord lengths from zero, so it is sorted: the segment is the last station
+    // whose arc is not past this one. A linear scan ran on every arc query and there are several
+    // per frame per cue.
+    const auto after = std::upper_bound(mArc.begin(), mArc.end(), arc);
+    station = std::clamp(static_cast<int>(after - mArc.begin()) - 1, 0, n - 1);
+    const float start = mArc[station];
+    const float length = (station + 1 < n) ? (mArc[station + 1] - start) : (mLapLength - start);
+    t = length > 0.0f ? std::clamp((arc - start) / length, 0.0f, 1.0f) : 0.0f;
     return true;
+}
+
+// The blend the arc queries share. Two unit forwards that nearly cancel - the two sides of a
+// hairpin taken in two stations - lerp to a vector whose direction is noise, and normalising it
+// hands back a confident wrong heading; zero is the honest answer and every caller already treats
+// a null forward as "no direction here".
+void CourseMap::ForwardInSegment(int station, float t, float& x, float& z) const {
+    x = 0.0f;
+    z = 0.0f;
+    float ax, az, bx, bz;
+    Forward(station, ax, az);
+    Forward(station + 1, bx, bz);
+    const float mixX = ax + (bx - ax) * t;
+    const float mixZ = az + (bz - az) * t;
+    const float len = Hypot2(mixX, mixZ);
+    if (len < kForwardBlendMinLength) {
+        return;
+    }
+    x = mixX / len;
+    z = mixZ / len;
 }
 
 bool CourseMap::SegmentAtArc(float arc, int& station, float& t) const {
@@ -467,16 +498,7 @@ void CourseMap::ForwardAtArc(float arc, float& x, float& z) const {
     if (!SegmentForArc(arc, station, t)) {
         return;
     }
-    float ax, az, bx, bz;
-    Forward(station, ax, az);
-    Forward(station + 1, bx, bz);
-    x = ax + (bx - ax) * t;
-    z = az + (bz - az) * t;
-    const float len = Hypot2(x, z);
-    if (len > 0.0f) {
-        x /= len;
-        z /= len;
-    }
+    ForwardInSegment(station, t, x, z);
 }
 
 bool CourseMap::PointAtArc(float arc, float& x, float& z) const {
@@ -565,12 +587,18 @@ bool CourseMap::RoadOffsetAtArc(float arc, float x, float y, float z, float& out
         return mGraph.LateralOffset(x, y, z, mRightPerpSign, out, closestXOut, closestZOut,
                                     halfWidthOut);
     }
+    // Resolved once and reused for the point, the corridor and the perpendicular: going back
+    // through PointAtArc and RightVectorAtArc re-ran the segment search twice more per query.
     int station = 0;
     float t = 0.0f;
-    float lineX = 0.0f, lineZ = 0.0f;
-    if (!SegmentForArc(arc, station, t) || !PointAtArc(arc, lineX, lineZ)) {
+    if (!SegmentForArc(arc, station, t)) {
         return false;
     }
+    float ax, az, bx, bz;
+    Centre(station, ax, az);
+    Centre(station + 1, bx, bz);
+    const float lineX = ax + (bx - ax) * t;
+    const float lineZ = az + (bz - az) * t;
     // Not `near`/`far`: both are macros in the Windows headers this translation unit pulls in.
     const float widthHere = HalfWidth(station);
     const float widthNext = HalfWidth(station + 1);
@@ -578,8 +606,15 @@ bool CourseMap::RoadOffsetAtArc(float arc, float x, float y, float z, float& out
     if (!(halfWidth > 0.0f)) {
         return false;
     }
-    float rightX = 0.0f, rightZ = 0.0f;
-    RightVectorAtArc(arc, rightX, rightZ);
+    float forwardX = 0.0f, forwardZ = 0.0f;
+    ForwardInSegment(station, t, forwardX, forwardZ);
+    // No forward here means no "across the line" either. Falling through returned a confident
+    // offset of exactly zero - "you are perfectly centred" - from a point with no direction at all.
+    if (forwardX == 0.0f && forwardZ == 0.0f) {
+        return false;
+    }
+    const float rightX = forwardZ * mRightPerpSign;
+    const float rightZ = -forwardX * mRightPerpSign;
     if (closestXOut != nullptr) {
         *closestXOut = lineX;
     }
@@ -614,6 +649,7 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         }
     }
     if (moved == 0) {
+        EdgeMap::ConfirmShift(false);
         return false;  // the whole line was already on the road
     }
 
@@ -662,6 +698,9 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
             mTurn[i] = SignedTurnAt(i);
         }
         BuildCurves();
+        // The stations are back where the course authored them, so the edge map must measure from
+        // there too - otherwise SideAtArc describes a line this map no longer has.
+        EdgeMap::ConfirmShift(false);
         RT_LOGF(RT_TAG_A11Y,
                 "course map: line repair REVERTED - it added %d corner(s) to the course (%d -> %d), "
                 "worst shift %.0f\n",
@@ -670,6 +709,8 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         return false;
     }
 
+    // The repair stuck: the edge map rebases its distances onto the line the stations now have.
+    EdgeMap::ConfirmShift(true);
     RT_LOGF(RT_TAG_A11Y,
             "course map: %d of %d stations were off the road, line repaired, worst shift %.0f, "
             "lap %.0f\n",

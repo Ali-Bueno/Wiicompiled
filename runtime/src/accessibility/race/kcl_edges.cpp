@@ -41,11 +41,16 @@ constexpr float kEdgeSameSurfaceUnits = kEdgeBankWindowUnits;
 // is the drop already defined as past recovery, so a surface that far from the line is not it.
 constexpr float kEdgeDriftLimitUnits = kEdgeProbeReachUnits;
 
-// Steps this side may take: the caller's reach, never past the probe cap, and never fewer than one
-// so a station whose stretch is narrower than a step still reports the step it can resolve.
+// Steps this side may take: the caller's reach, never past the probe cap. A reach under one march
+// step - which a NEGATIVE reach also is, and the line repair can hand one over by moving a station
+// past the far edge of its own stretch - resolves nothing, so the side takes no samples at all and
+// the sweep leaves it invalid. Rounding it up to one step instead reported a road that had simply
+// not been looked for as an open edge at exactly one step out.
 int SamplesFor(float reach) {
-    const int steps = static_cast<int>(reach / kKclLateralStepUnits);
-    return std::max(1, std::min(steps, kLateralSamples));
+    if (!(reach >= kKclLateralStepUnits)) {
+        return 0;
+    }
+    return std::min(static_cast<int>(reach / kKclLateralStepUnits), kLateralSamples);
 }
 
 // Walks outwards one step at a time, carrying the last surface height forward so a sloped road is
@@ -53,6 +58,10 @@ int SamplesFor(float reach) {
 // is a lower bound with the step as its resolution.
 KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samples) {
     KclEdge edge;
+    if (samples < 1) {
+        return edge;  // no room to sweep: the side stays invalid rather than reporting a guess
+    }
+    edge.valid = true;
     float referenceY = y;
     float edgeY = y;
     float stopped = 0.0f;

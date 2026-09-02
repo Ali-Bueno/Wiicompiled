@@ -1,5 +1,6 @@
 #include <SDL3/SDL_events.h>
 
+#include "accessibility/a11y_log.h"
 #include "accessibility/accessibility.h"
 #include "accessibility/menu/settings_menu.h"
 #include "aurora/event.h"
@@ -107,7 +108,8 @@ void OnKey(const SDL_KeyboardEvent& event) {
 
 }  // namespace
 
-void HandleEvents(const AuroraEvent* events) noexcept {
+// noexcept: this runs inside the host's event pump, so a fault here is logged once and swallowed.
+void HandleEvents(const AuroraEvent* events) noexcept try {
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
@@ -126,6 +128,12 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             default:
                 break;
         }
+    }
+} catch (...) {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        RT_LOGF(RT_TAG_A11Y, "HandleEvents: exception swallowed\n");
     }
 }
 

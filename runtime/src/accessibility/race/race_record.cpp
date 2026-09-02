@@ -62,16 +62,55 @@ constexpr std::uint32_t kLapCountValidBit = 4;
 
 // Reproduces Raceinfo::GetLapCount (0x805336A4), which reads Racedata rather than KMP STGI - so it
 // is the total the HUD shows, including the VS and menu overrides that STGI would miss.
-int EffectiveLapCount(std::uint32_t racedata) {
+//
+// Returns whether the total is really the race's own. The game's fallback of 3 is still written out
+// because that is what its HUD would show, but a caller that would END the player's race on it has
+// to know it is a guess: battle and other lap-less modes reach here too.
+bool EffectiveLapCount(std::uint32_t racedata, int& lapsOut) {
+    lapsOut = kDefaultLapCount;
     std::uint32_t flags = 0;
     std::uint8_t laps = 0;
     if (!Memory::TryRead32(racedata + kRacedataFlags, flags) ||
         (flags & kLapCountValidBit) == 0 ||
         !TryU8(racedata + kRacedataKmpLapCount, laps)) {
-        return kDefaultLapCount;
+        return false;
     }
     const int value = static_cast<int>(laps);
-    return value >= kMinLapCount && value <= kMaxLapCount ? value : kDefaultLapCount;
+    if (value < kMinLapCount || value > kMaxLapCount) {
+        return false;
+    }
+    lapsOut = value;
+    return true;
+}
+
+// Last tick's value of the race frame counter, and whether there is one to compare against.
+// File-static because the pause test is a diff and RaceState is rebuilt every frame.
+std::uint32_t g_lastRaceFrame = 0;
+bool g_haveLastRaceFrame = false;
+int g_stalledTicks = 0;
+
+// Two consecutive stalled ticks, not one: the same guest frame presented twice would otherwise read
+// as a pause and drop the assists for a frame.
+constexpr int kPauseStallTicks = 2;
+
+// The pause menu keeps presenting frames, so our tick keeps running while the game's own race frame
+// counter (Raceinfo+0x20, which counts on past the countdown) stands still. That stall IS the pause;
+// no new hook is needed. Zero is excluded so a race that has not started counting yet does not read
+// as paused.
+bool RaceFrameStalled(std::uint32_t raceinfo) {
+    std::uint32_t frame = 0;
+    if (!Memory::TryRead32(raceinfo + kRaceinfoTimer, frame)) {
+        ResetRaceRecord();
+        return false;
+    }
+    if (g_haveLastRaceFrame && frame == g_lastRaceFrame && frame != 0) {
+        ++g_stalledTicks;
+    } else {
+        g_stalledTicks = 0;
+    }
+    g_lastRaceFrame = frame;
+    g_haveLastRaceFrame = true;
+    return g_stalledTicks >= kPauseStallTicks;
 }
 
 // Racedata::GetPlayerIdOfLocalPlayer (0x80531F70): a sign-extended byte per splitscreen slot.
@@ -99,12 +138,21 @@ bool LocalPlayerRecord(std::uint32_t racedata, std::uint32_t raceinfo, std::uint
 
 }  // namespace
 
+void ResetRaceRecord() {
+    g_lastRaceFrame = 0;
+    g_haveLastRaceFrame = false;
+    g_stalledTicks = 0;
+}
+
 void FillRaceRecord(RaceState& state) {
     std::uint32_t raceinfo = 0;
     std::uint32_t racedata = 0;
     if (!TryPointer(kRaceinfoPtr, raceinfo) || !TryPointer(kRacedataPtr, racedata)) {
+        ResetRaceRecord();
         return;
     }
+
+    state.paused = RaceFrameStalled(raceinfo);
 
     std::uint32_t stageWord = 0;
     if (!Memory::TryRead32(raceinfo + kRaceinfoStage, stageWord)) {
@@ -113,8 +161,9 @@ void FillRaceRecord(RaceState& state) {
     const std::int32_t stage = static_cast<std::int32_t>(stageWord);
 
     // Only stage 2 is driving. Intro and countdown come before it, and the two finished stages
-    // after it - so the assists go quiet on their own at the flag, with no extra bookkeeping.
-    state.driving = stage == kStageRacing;
+    // after it - so the assists go quiet on their own at the flag, with no extra bookkeeping. A
+    // paused race is not driving either: the kart is frozen behind the menu.
+    state.driving = stage == kStageRacing && !state.paused;
     state.finished = stage >= kStageFinished;
 
     if (stage == kStageIntro || stage == kStageCountdown) {
@@ -125,7 +174,7 @@ void FillRaceRecord(RaceState& state) {
         }
     }
 
-    state.totalLaps = EffectiveLapCount(racedata);
+    const bool lapsKnown = EffectiveLapCount(racedata, state.totalLaps);
 
     std::uint32_t record = 0;
     if (!LocalPlayerRecord(racedata, raceinfo, record, state.playerId)) {
@@ -147,8 +196,9 @@ void FillRaceRecord(RaceState& state) {
         state.lap = static_cast<std::int16_t>(lap);
         // The stage is race-wide, so it stays on "racing" while the other karts finish. This player
         // is done once their lap passes the total, which is the same test EndLap uses - without it
-        // the guide keeps sounding through the post-finish auto-drive.
-        if (state.totalLaps > 0 && state.lap > state.totalLaps) {
+        // the guide keeps sounding through the post-finish auto-drive. Only when the total is the
+        // race's own: against the guessed 3 this would end every lap-less mode on lap 4.
+        if (lapsKnown && state.totalLaps > 0 && state.lap > state.totalLaps) {
             state.driving = false;
             state.finished = true;
         }

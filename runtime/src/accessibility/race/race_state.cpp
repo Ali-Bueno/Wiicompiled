@@ -62,9 +62,26 @@ RaceState g_state;
 // the last-known-on-ground surface has nowhere else to live while the kart is airborne.
 bool g_lastGroundOffRoad = false;
 
-// The kart the human is driving. Scanned every frame rather than cached: the count is small, and a
+// One entry of Kart::Manager's array, with its sub-object table.
+bool ResolveKart(std::uint32_t karts, std::uint32_t index, std::uint32_t& kartOut,
+                 std::uint32_t& accOut) {
+    return TryPointer(karts + index * kPointerStride, kartOut) && TryPointer(kartOut, accOut);
+}
+
+// Kart::Link::IsLocal: bit 1 of the status word.
+bool IsLocalKart(std::uint32_t acc) {
+    std::uint32_t status = 0;
+    std::uint32_t flags = 0;
+    return TryPointer(acc + kAccStatus, status) &&
+           Memory::TryRead32(status + kStatusTypeFlags, flags) && (flags & kStatusLocalBit) != 0;
+}
+
+// The kart the human is driving. Indexed by the player id the race record already resolved through
+// Racedata, so the mod has ONE definition of "the player" instead of two that can disagree; the
+// local-bit scan is the fallback for the frames where the record has not read yet. Never cached: a
 // cached index would go stale across a restart in a way that is silent and hard to notice.
-bool FindLocalKart(std::uint32_t manager, std::uint32_t& kartOut, std::uint32_t& accOut) {
+bool FindPlayerKart(std::uint32_t manager, int playerId, std::uint32_t& kartOut,
+                    std::uint32_t& accOut) {
     std::uint32_t karts = 0;
     std::uint8_t count = 0;
     if (!TryPointer(manager + kManagerKartArray, karts) ||
@@ -72,22 +89,20 @@ bool FindLocalKart(std::uint32_t manager, std::uint32_t& kartOut, std::uint32_t&
         return false;
     }
 
+    // Confirmed against the same local bit the scan uses, so the two answers can never diverge.
+    if (playerId >= 0 && playerId < static_cast<int>(count) &&
+        ResolveKart(karts, static_cast<std::uint32_t>(playerId), kartOut, accOut) &&
+        IsLocalKart(accOut)) {
+        return true;
+    }
+
     for (std::uint32_t i = 0; i < count; ++i) {
-        std::uint32_t kart = 0;
-        std::uint32_t acc = 0;
-        std::uint32_t status = 0;
-        std::uint32_t flags = 0;
-        if (!TryPointer(karts + i * kPointerStride, kart) || !TryPointer(kart, acc) ||
-            !TryPointer(acc + kAccStatus, status) ||
-            !Memory::TryRead32(status + kStatusTypeFlags, flags)) {
-            continue;
-        }
-        if ((flags & kStatusLocalBit) != 0) {
-            kartOut = kart;
-            accOut = acc;
+        if (ResolveKart(karts, i, kartOut, accOut) && IsLocalKart(accOut)) {
             return true;
         }
     }
+    kartOut = 0;
+    accOut = 0;
     return false;
 }
 
@@ -147,18 +162,26 @@ int ReadKartObjects(std::uint32_t* out, int maxCount) {
 void ResetRaceState() {
     g_state = RaceState{};
     g_lastGroundOffRoad = false;
+    ResetRaceRecord();
 }
 
 RaceState& ReadRaceState() {
     g_state = RaceState{};
 
+    // The record first, because it settles who the player is; the kart is then looked up by that
+    // same id. Its fields are blanked again below if no kart stands behind them, so `valid` keeps
+    // meaning "everything in here was read this frame".
+    FillRaceRecord(g_state);
+
     std::uint32_t manager = 0;
     if (!TryPointer(kKartManagerPtr, manager)) {
-        return g_state;  // no race loaded
+        g_state = RaceState{};  // no race loaded
+        return g_state;
     }
 
     std::uint32_t acc = 0;
-    if (!FindLocalKart(manager, g_state.kartObject, acc)) {
+    if (!FindPlayerKart(manager, g_state.playerId, g_state.kartObject, acc)) {
+        g_state = RaceState{};
         return g_state;
     }
 
@@ -166,12 +189,14 @@ RaceState& ReadRaceState() {
     if (!TryPointer(acc + kAccBody, body) || !TryPointer(body + kBodyPhysicsHolder, holder) ||
         !TryPointer(holder + kHolderPhysics, physics) ||
         !TryPointer(acc + kAccMovement, movement)) {
+        g_state = RaceState{};
         return g_state;
     }
 
     if (!TryVec3(physics + kPhysicsPosition, g_state.x, g_state.y, g_state.z) ||
         !TryFloat(movement + kMovementSpeed, g_state.speed) ||
         !ReadHeading(movement, holder, g_state.speed, g_state.forwardX, g_state.forwardZ)) {
+        g_state = RaceState{};
         return g_state;
     }
 
@@ -196,11 +221,6 @@ RaceState& ReadRaceState() {
     if (TryPointer(holder + kHolderHitboxGroup, hitboxGroup)) {
         Memory::TryRead32(hitboxGroup + kHitboxKclFlags, g_state.floorFlags);
     }
-
-    // Sets `driving`, which stays false unless the race stage reads back as racing. Deliberately
-    // conservative: without confirming the race is live it is better to say nothing than to play
-    // cues over an intro camera or a finished race.
-    FillRaceRecord(g_state);
 
     g_state.valid = true;
     return g_state;

@@ -146,51 +146,11 @@ void SettingsMenu::BuildOptions() {
                         },
                         nullptr});
     mOptions.push_back(
-        {"opt_steering_sensitivity",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringSensitivity()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilitySteeringSensitivity(
-                 StepKnob(RuntimeConfigFile::AccessibilitySteeringSensitivity(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
         {"opt_look_ahead",
          [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringLookAhead()); },
          [](int dir) {
              RuntimeConfigFile::SetAccessibilitySteeringLookAhead(
                  StepKnob(RuntimeConfigFile::AccessibilitySteeringLookAhead(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
-        {"opt_position_gain",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringPositionGain()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilitySteeringPositionGain(
-                 StepKnob(RuntimeConfigFile::AccessibilitySteeringPositionGain(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
-        {"opt_curve_accent",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringCurveAccent()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilitySteeringCurveAccent(
-                 StepKnob(RuntimeConfigFile::AccessibilitySteeringCurveAccent(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
-        {"opt_pan_curve",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringPanCurve()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilitySteeringPanCurve(
-                 StepKnob(RuntimeConfigFile::AccessibilitySteeringPanCurve(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
-        {"opt_curve_look_ahead",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilityCurveLookAhead()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilityCurveLookAhead(
-                 StepKnob(RuntimeConfigFile::AccessibilityCurveLookAhead(), dir));
          },
          nullptr});
 

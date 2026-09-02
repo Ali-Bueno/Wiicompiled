@@ -15,6 +15,10 @@ namespace a11y::audio {
 // sits well below a quarter of that, so the same rate is ample and keeps the two streams alike.
 inline constexpr int kSampleRate = 32000;
 
+// Queue target used until SetFramePeriod reports the live guest frame duration. NTSC's 60 Hz is
+// the shorter of the two guest periods, so before the first call the target can only be small.
+inline constexpr float kDefaultFramePeriodSec = 1.0f / 60.0f;
+
 // One voice per channel: a cue replaces whatever that channel was playing, and never cuts another
 // family off. Carried over from the MK64 mod, where a curve beep silencing the track-limit tone
 // left the player without edge feedback at exactly the moment it mattered.
@@ -58,6 +62,10 @@ public:
     // Renders and tops up the queue. Nothing is heard unless this runs every frame.
     void Tick();
 
+    // One tick is one GUEST frame, which is 50 Hz on PAL and not the 60 Hz assumed by default, so
+    // the queue target has to follow the duration the caller actually measures.
+    void SetFramePeriod(float seconds);
+
     void PlayOneShot(CueChannel channel, const CueSpec& spec);
 
     // Starts the channel if it is silent, otherwise re-steers pitch, pan and volume without
@@ -93,12 +101,15 @@ private:
     Voice& VoiceFor(CueChannel channel) { return mVoices[static_cast<int>(channel)]; }
     void Apply(Voice& voice, const CueSpec& spec, bool sustained, bool restart);
     void Render(int frames);
+    int TargetQueueFrames() const;
+    int ReleaseTailFrames() const;
 
     SDL_AudioStream* mStream = nullptr;
     Voice mVoices[static_cast<int>(CueChannel::Count)];
     std::vector<float> mMix;
     std::vector<int16_t> mOut;
     float mMasterVolume = 1.0f;
+    float mFrameSec = kDefaultFramePeriodSec;
 };
 
 }  // namespace a11y::audio

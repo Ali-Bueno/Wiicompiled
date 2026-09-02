@@ -70,10 +70,32 @@ constexpr std::uint32_t kCkptSectionLapLength = 0x10;
 // An unset link index. InitLinks prefills both arrays with this before filling them.
 constexpr std::uint8_t kNoRouteLink = 0xFF;
 
+// The most points a route section can have and still be walkable: every successor index the game
+// stores is a u8, and 0xFF is the "no link" sentinel, so point 255 and beyond can never be named
+// by a link. Reading such a section anyway aliases every high index onto a low one and wires the
+// walk to the wrong points silently, so it is refused and the caller falls back.
+constexpr std::uint32_t kMaxRoutePoints = kNoRouteLink;
 
 // A course with more checkpoints than this is not a course; the read is bounded so a bad pointer
-// cannot spin the frame tick.
+// cannot spin the frame tick. Checkpoints carry no u8 links, so they are not capped by the above.
 constexpr std::uint32_t kMaxCheckpoints = 1024;
+
+// Once per run: the route read is retried every frame until it succeeds, and a course of this
+// shape is a data fact rather than a per-frame event.
+bool RouteTooLongForLinks(const char* section, std::uint32_t count) {
+    if (count <= kMaxRoutePoints) {
+        return false;
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        RT_LOGF(RT_TAG_A11Y,
+                "course route: %s has %u points, past the %u a u8 successor link can name - "
+                "route refused\n",
+                section, static_cast<unsigned>(count), static_cast<unsigned>(kMaxRoutePoints));
+    }
+    return true;
+}
 
 // RoutePoint.range must always mean the ENPT corridor half-width (route_graph.h kCorridorPerRange),
 // because ENPT is the only one of the two point sets whose +0x0C field is a corridor at all - see
@@ -132,7 +154,7 @@ bool ReadCourseRoute(std::vector<RoutePoint>& out) {
     if (manager == 0 || !TryPointer(manager + kManagerEnptSection, section) ||
         !TryPointer(section + kSectionHolderArray, holders) ||
         !TryU16(section + kSectionCount, /*highHalf=*/true, count) || count == 0 ||
-        count > kMaxCheckpoints) {
+        RouteTooLongForLinks("ENPT", count)) {
         return false;
     }
 
@@ -186,7 +208,7 @@ bool ReadCourseItemRoute(std::vector<RoutePoint>& out) {
     if (manager == 0 || !TryPointer(manager + kManagerItptSection, section) ||
         !TryPointer(section + kSectionHolderArray, holders) ||
         !TryU16(section + kSectionCount, /*highHalf=*/true, count) || count == 0 ||
-        count > kMaxCheckpoints) {
+        RouteTooLongForLinks("ITPT", count)) {
         return false;
     }
 

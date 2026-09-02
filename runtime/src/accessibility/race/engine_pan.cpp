@@ -130,16 +130,16 @@ void EnginePan::Reset() {
 void EnginePan::Apply(const RaceState& state, float pan, bool active) {
     if (!active) {
         // Not guiding. Writing our cancellation term while idle would force the engine to the
-        // centre; zeroing the external term once gives the game its own placement back. One
-        // attempt per transition - a sound that is not playing has nothing to restore.
+        // centre; zeroing the external term gives the game its own placement back. Retried every
+        // frame until the write actually lands: the engine sound comes from a pool, so on the frame
+        // we stop guiding it may be missing, and a one-shot attempt would leave our last pan pinned
+        // on it for the rest of the race.
         if (!mIdleRestored) {
-            mIdleRestored = true;
             std::uint32_t actor = 0;
             std::uint32_t sound = 0;
-            if (state.valid && LocalKartActor(state, actor) == Stage::Applied &&
-                TryPointer(actor + kActorEngineSound, sound)) {
-                TryWriteFloat(sound + kSoundExternalPan, 0.0f);
-            }
+            mIdleRestored = state.valid && LocalKartActor(state, actor) == Stage::Applied &&
+                            TryPointer(actor + kActorEngineSound, sound) &&
+                            TryWriteFloat(sound + kSoundExternalPan, 0.0f);
         }
         return;
     }

@@ -16,14 +16,20 @@ namespace {
 bool g_initialised = false;
 bool g_announced = false;
 
-}  // namespace
-
-void Init() {
-    if (g_initialised) {
+// These entry points are called from translated guest code, which has no handlers and no way to
+// unwind - a guest read that faults or an allocation that fails would take the game down with the
+// mod. Nothing is allowed to escape. Logged once per entry point: a fault that repeats every frame
+// would otherwise fill the log with the same line.
+void ReportFault(const char* where, bool& logged) {
+    if (logged) {
         return;
     }
-    g_initialised = true;
+    logged = true;
+    RT_LOGF(RT_TAG_A11Y, "accessibility: exception escaped %s; suppressed for the rest of the run\n",
+            where);
+}
 
+void InitImpl() {
     // Phrases first: everything spoken after this point goes through the table.
     loc::Init();
     ScreenReader::Instance().Initialise();
@@ -35,11 +41,7 @@ void Init() {
             audio::CueService::Instance().Available() ? "on" : "off");
 }
 
-void Tick() {
-    if (!g_initialised) {
-        return;
-    }
-
+void TickImpl() {
     // Announced from the first presented frame rather than from Init(), so hearing it also
     // confirms the per-frame hook is live.
     if (!g_announced) {
@@ -67,14 +69,50 @@ void Tick() {
     audio::CueService::Instance().Tick();
 }
 
-void Shutdown() {
-    if (!g_initialised) {
-        return;
-    }
+void ShutdownImpl() {
     race::Reset();
     audio::CueService::Instance().Shutdown();
     ScreenReader::Instance().Shutdown();
     UnloadPrism();
+}
+
+}  // namespace
+
+void Init() {
+    if (g_initialised) {
+        return;
+    }
+    g_initialised = true;
+    try {
+        InitImpl();
+    } catch (...) {
+        static bool logged = false;
+        ReportFault("Init", logged);
+    }
+}
+
+void Tick() {
+    if (!g_initialised) {
+        return;
+    }
+    try {
+        TickImpl();
+    } catch (...) {
+        static bool logged = false;
+        ReportFault("Tick", logged);
+    }
+}
+
+void Shutdown() {
+    if (!g_initialised) {
+        return;
+    }
+    try {
+        ShutdownImpl();
+    } catch (...) {
+        static bool logged = false;
+        ReportFault("Shutdown", logged);
+    }
     g_initialised = false;
     g_announced = false;
 }

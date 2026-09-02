@@ -3,6 +3,7 @@
 #include "accessibility/a11y_log.h"
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/localization.h"
+#include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/race_state.h"
@@ -10,18 +11,34 @@
 #include "runtime_config.h"
 
 namespace a11y::race {
+namespace {
 
 using audio::CueChannel;
 using audio::CueService;
 
+// The nearest route segment can jump to a different part of the course - the far side of one of
+// Mushroom Gorge's gaps, the other level of a crossover - and the offset's sign jumps with it: a
+// real lap logged -4.68 to +6.89 inside one beep interval. A kart cannot cross the line that fast,
+// so the panned side only follows a new sign once it has held for longer than such a jump lasts.
+constexpr float kEdgeSideHoldSec = kLimitDebounceSec * 2.0f;
+
+// Wrong way is a held state, not an event, so it is re-announced while it holds.
+constexpr float kWrongWayRepeatSec = kSpokenLeadSec;
+
+}  // namespace
+
 void TrackLimits::Reset() {
     mBeepTimer = 0.0f;
     mBeepLevel = 0.0f;
+    mLastMagnitude = 0.0f;
     mNearEdge = false;
     mHoldingTone = false;
+    mSurfaceOffRoad = false;
+    mSurfaceHoldSec = 0.0f;
     mWasOffRoad = false;
     mWasWrongWay = false;
-    mSurfaceHoldSec = 0.0f;
+    mWrongWayHoldSec = 0.0f;
+    mWrongWaySaySec = 0.0f;
     mSideRight = false;
     mSideKnown = false;
     mSideHoldSec = 0.0f;
@@ -30,52 +47,115 @@ void TrackLimits::Reset() {
     CueService::Instance().Stop(CueChannel::Edge);
 }
 
-void TrackLimits::UpdateSurface(const RaceState& state) {
-    if (state.offRoad == mWasOffRoad) {
+// The surface flag has to read the same way for a debounce window before the answer flips, so a
+// boundary flicker can neither chop the held tone into a warble nor queue a backlog of speech.
+bool TrackLimits::SurfaceSaysOffRoad(bool offRoad, float dtSec) {
+    if (offRoad == mSurfaceOffRoad) {
+        mSurfaceHoldSec = 0.0f;
+        return mSurfaceOffRoad;
+    }
+    mSurfaceHoldSec += dtSec;
+    if (mSurfaceHoldSec < kLimitDebounceSec) {
+        return mSurfaceOffRoad;
+    }
+    mSurfaceHoldSec = 0.0f;
+    mSurfaceOffRoad = offRoad;
+    return mSurfaceOffRoad;
+}
+
+// The ear both edge cues pan to. A side that disagrees with the one the player is hearing has to
+// last kEdgeSideHoldSec before it is adopted, which a nearest-segment jump never does.
+bool TrackLimits::PannedSideIsRight(bool towardsRight, bool haveOffset, float dtSec) {
+    if (!haveOffset) {
+        return mSideRight;  // nothing measured this frame: keep the ear the player last heard
+    }
+    if (!mSideKnown) {
+        mSideKnown = true;
+        mSideRight = towardsRight;
+        mSideHoldSec = 0.0f;
+        return mSideRight;
+    }
+    if (towardsRight == mSideRight) {
+        mSideHoldSec = 0.0f;
+        return mSideRight;
+    }
+    mSideHoldSec += dtSec;
+    if (mSideHoldSec >= kEdgeSideHoldSec) {
+        mSideRight = towardsRight;
+        mSideHoldSec = 0.0f;
+    }
+    return mSideRight;
+}
+
+// Driven off the DEBOUNCED surface, not the raw flag: the raw one flickers several times a second
+// on a kerb, and every flicker used to queue another "off road" / "on road" behind the last.
+void TrackLimits::UpdateSurface(bool offRoad) {
+    if (offRoad == mWasOffRoad) {
         return;
     }
-    mWasOffRoad = state.offRoad;
+    mWasOffRoad = offRoad;
     // Temporary, same reason as the edge logs.
-    RT_LOGF(RT_TAG_A11Y, "surface: %s (edge kind %s)\n", state.offRoad ? "off_road" : "on_road",
+    RT_LOGF(RT_TAG_A11Y, "surface: %s (edge kind %s)\n", offRoad ? "off_road" : "on_road",
             EdgeKindName(mNearEdgeKind));
-    // Spoken on the transition only. Speaking a continuous value is what turns narration into
-    // spam, and the surface either is or is not slowing the kart. Leaving the road where the
-    // measured edge on that side is a drop is a different sentence from sliding onto grass - the
-    // kind comes from the edge cue's own last look, so it is only known while edge cues are on.
+    // Spoken on the transition only. Leaving the road where the measured edge on that side is a
+    // drop is a different sentence from sliding onto grass - the kind comes from the edge cue's
+    // own last look, so it is only known while edge cues are on.
     const char* key = "on_road";
-    if (state.offRoad) {
+    if (offRoad) {
         key = mNearEdgeKind == EdgeKind::Fall ? "off_road_fall" : "off_road";
     }
     ScreenReader::Instance().Speak(loc::Get(key), /*interrupt=*/false);
 }
 
-void TrackLimits::UpdateWrongWay(const RaceState& state) {
-    if (state.wrongWay == mWasWrongWay) {
+// Debounced like the surface, and re-announced while it holds: wrong way is a state the player can
+// sit in for many seconds, and one utterance at the transition is easily missed under engine noise.
+void TrackLimits::UpdateWrongWay(bool wrongWay, float dtSec) {
+    if (wrongWay == mWasWrongWay) {
+        mWrongWayHoldSec = 0.0f;
+    } else {
+        mWrongWayHoldSec += dtSec;
+        if (mWrongWayHoldSec >= kLimitDebounceSec) {
+            mWrongWayHoldSec = 0.0f;
+            mWasWrongWay = wrongWay;
+            mWrongWaySaySec = 0.0f;  // a genuine change speaks at once
+        }
+    }
+    if (!mWasWrongWay) {
         return;
     }
-    mWasWrongWay = state.wrongWay;
-    if (mWasWrongWay) {
-        ScreenReader::Instance().Speak(loc::Get("wrong_way"), /*interrupt=*/true);
+    mWrongWaySaySec -= dtSec;
+    if (mWrongWaySaySec > 0.0f) {
+        return;
     }
+    mWrongWaySaySec = kWrongWayRepeatSec;
+    // Never interrupt: a repeating reminder that cuts off the corner calls would cost the player
+    // the very information they need to turn around.
+    ScreenReader::Instance().Speak(loc::Get("wrong_way"), /*interrupt=*/false);
 }
 
 void TrackLimits::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,
                        int station, float dtSec) {
-    if (!state.valid || !state.driving || !map.Loaded()) {
+    if (!state.valid || !state.driving) {
         if (mHoldingTone) {
             CueService::Instance().Stop(CueChannel::Edge);
             mHoldingTone = false;
         }
         return;
     }
-    if (RuntimeConfigFile::AccessibilityEdgeCues()) {
-        UpdateEdge(state, map, handedness, station, dtSec);
+    // `state.offRoad` alone is not enough: UpdateOffroad stops writing it while airborne, so it
+    // keeps reporting the last surface the kart touched. Debounced once here so the tone and the
+    // narration can never disagree about which surface the kart is on.
+    const bool offRoad = SurfaceSaysOffRoad(state.offRoad && state.onGround, dtSec);
+    // Only the edge cue needs the course map; the surface and the wrong-way flag come from the
+    // race record, and gating them on a loaded map silenced both on any course that never built.
+    if (map.Loaded() && RuntimeConfigFile::AccessibilityEdgeCues()) {
+        UpdateEdge(state, map, handedness, station, dtSec, offRoad);
     } else if (mHoldingTone) {
         CueService::Instance().Stop(CueChannel::Edge);
         mHoldingTone = false;
     }
-    UpdateSurface(state);
-    UpdateWrongWay(state);
+    UpdateSurface(offRoad);
+    UpdateWrongWay(state.wrongWay, dtSec);
 }
 
 }  // namespace a11y::race

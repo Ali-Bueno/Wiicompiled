@@ -76,9 +76,10 @@ float CourseMap::TightnessAt(int i) const {
     if (mTurn.empty()) {
         return 0.0f;
     }
-    // Curvature is radians per unit of travel, so multiplying by the spacing gives the heading
-    // change from one station to the next.
-    return std::fabs(mTurn[Wrap(i)]) * mMeanSpacing;
+    // The station's OWN span, not the lap mean: the threshold this is graded against is the game's
+    // heading change between two authored route segments, so a course whose route points bunch up
+    // in the corners must not have those corners scaled down by the average of the straights.
+    return std::fabs(mTurn[Wrap(i)]) * SpanAt(i);
 }
 
 // Heading of the segment leaving this station.
@@ -212,8 +213,7 @@ void CourseMap::LogCurveMap() const {
             static_cast<int>(mCurves.size()));
     for (int i = 0; i < StationCount(); ++i) {
         RT_LOGF(RT_TAG_A11Y, "  station %2d turn=%+.3f rad corridor=%.0f\n", i,
-                static_cast<double>(mTurn[i] * mMeanSpacing),
-                static_cast<double>(HalfWidth(i)));
+                static_cast<double>(mTurn[i] * SpanAt(i)), static_cast<double>(HalfWidth(i)));
     }
     for (const Curve& c : mCurves) {
         RT_LOGF(RT_TAG_A11Y,
@@ -233,37 +233,48 @@ float CourseMap::CurveProgress(const Curve& curve, int station) const {
 }
 
 const Curve* CourseMap::ActiveCurve(int station, float clearance) const {
-    const Curve* best = nullptr;
-    float bestEntry = 0.0f;
-    for (const Curve& curve : mCurves) {
-        // A curve stays selectable until its exit is well behind, so the choice does not flicker to
-        // the next corner the moment this one's exit is crossed.
-        if (ArcSigned(station, curve.exit) <= -clearance) {
-            continue;
-        }
-        const float toEntry = ArcSigned(station, curve.entry);
-        if (best == nullptr || toEntry < bestEntry) {
-            best = &curve;
-            bestEntry = toEntry;
-        }
-    }
-    return best;
+    return ActiveCurveAt(ArcAt(station), clearance);
 }
 
+// Everything here is measured as UNSIGNED forward distance around the lap. A signed measure folds
+// at half a lap, so a corner longer than that - Baby Park's single continuous curve, and any oval
+// emitted as one - reads as "behind" from inside its own first half and is dropped at its own
+// entry.
 const Curve* CourseMap::ActiveCurveAt(float fromArc, float clearance) const {
-    const Curve* best = nullptr;
-    float bestEntry = 0.0f;
+    const float lap = mLapLength;
+    auto forward = [lap](float from, float to) {
+        if (!(lap > 0.0f)) {
+            return 0.0f;
+        }
+        const float d = std::fmod(to - from, lap);
+        return d < 0.0f ? d + lap : d;
+    };
+
+    const Curve* entered = nullptr;
+    float bestSince = 0.0f;
+    const Curve* ahead = nullptr;
+    float bestAhead = 0.0f;
     for (const Curve& curve : mCurves) {
-        if (ArcSignedTo(fromArc, curve.exit) <= -clearance) {
+        const float entryArc = ArcAt(curve.entry);
+        // How far past this corner's entry the kart is. A corner stays entered until its exit is
+        // `clearance` behind, so the choice does not flicker the moment the exit is crossed.
+        const float since = forward(entryArc, fromArc);
+        if (since <= CurveLength(curve) + clearance) {
+            // The most recently entered wins: inside the second half of a chicane the first half
+            // is still selectable, and describing it there is describing the wrong corner.
+            if (entered == nullptr || since < bestSince) {
+                entered = &curve;
+                bestSince = since;
+            }
             continue;
         }
-        const float toEntry = ArcSignedTo(fromArc, curve.entry);
-        if (best == nullptr || toEntry < bestEntry) {
-            best = &curve;
-            bestEntry = toEntry;
+        const float toEntry = forward(fromArc, entryArc);
+        if (ahead == nullptr || toEntry < bestAhead) {
+            ahead = &curve;
+            bestAhead = toEntry;
         }
     }
-    return best;
+    return entered != nullptr ? entered : ahead;
 }
 
 bool CourseMap::IsChainFollower(const Curve& curve, float gap) const {

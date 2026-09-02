@@ -21,8 +21,9 @@ public:
 
     // `pan` is -1 hard left, 0 centred, +1 hard right. Silently does nothing when the engine sound
     // is not currently playing, which is normal - the sound comes from a pool and is restarted.
-    // With `active` false the engine is handed back to the game: the external term is zeroed once
-    // and the camera-relative placement resumes, instead of being cancelled into a forced centre.
+    // With `active` false the engine is handed back to the game: the external term is zeroed -
+    // retried until that write lands - and the camera-relative placement resumes, instead of being
+    // cancelled into a forced centre.
     void Apply(const RaceState& state, float pan, bool active);
 
 private:

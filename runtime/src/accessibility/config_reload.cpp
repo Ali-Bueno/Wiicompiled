@@ -67,12 +67,7 @@ void ConfigReloadTick() {
     const bool lineWasItem = RuntimeConfigFile::AccessibilityLineFromItemRoute();
     apply(live.accessibilityInvertSteeringPan, fresh.accessibilityInvertSteeringPan);
     apply(live.accessibilitySteeringStrength, fresh.accessibilitySteeringStrength);
-    apply(live.accessibilitySteeringSensitivity, fresh.accessibilitySteeringSensitivity);
     apply(live.accessibilitySteeringLookAhead, fresh.accessibilitySteeringLookAhead);
-    apply(live.accessibilitySteeringPositionGain, fresh.accessibilitySteeringPositionGain);
-    apply(live.accessibilitySteeringCurveAccent, fresh.accessibilitySteeringCurveAccent);
-    apply(live.accessibilitySteeringPanCurve, fresh.accessibilitySteeringPanCurve);
-    apply(live.accessibilityCurveLookAhead, fresh.accessibilityCurveLookAhead);
     apply(live.accessibilityEdgeCues, fresh.accessibilityEdgeCues);
     apply(live.accessibilityLineSource, fresh.accessibilityLineSource);
     apply(live.accessibilityKartVolume, fresh.accessibilityKartVolume);
