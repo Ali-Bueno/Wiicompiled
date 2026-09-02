@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+
 namespace a11y::race {
 
 // Everything the race services read, gathered once per frame so no two of them disagree about

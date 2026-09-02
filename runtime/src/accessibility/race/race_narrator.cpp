@@ -53,7 +53,9 @@ void RaceNarrator::Tick(const RaceState& state, float dtSec) {
         return;
     }
 
-    if (state.lap >= 1 && state.lap != mSpokenLap) {
+    // A high-water mark, not a change: reversing back over the line and re-crossing it would
+    // otherwise say "lap 2 of 3" again. Reset() returns it to -1 for the next race.
+    if (state.lap >= 1 && state.lap > mSpokenLap) {
         mSpokenLap = state.lap;
         // The first lap is not announced: the countdown and the start are unmistakable already, and
         // saying it competes with the go signal.

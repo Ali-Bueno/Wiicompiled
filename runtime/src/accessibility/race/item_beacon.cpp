@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "accessibility/audio/cue_service.h"
+#include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/heading.h"
@@ -52,10 +53,9 @@ constexpr std::uint32_t kItemNone = 20;
 constexpr std::uint32_t kRacedataPtr = 0x809BD728;
 constexpr std::uint32_t kRacedataLocalToPlayer = 0xB84;
 
-// How far away a box is still worth mentioning, in stations - the real spacing between checkpoints.
-// Not in track widths: a KMP checkpoint quad is far wider than the road it spans, so a range in
-// "widths" varies wildly between courses and bears no relation to how far away the box actually is.
-constexpr float kBeaconRangeStations = 1.5f;
+// How far ahead a box is still worth mentioning: the spoken lead at the current speed, the same
+// reaction budget every other anticipating cue gets, floored at one road width when stopped.
+constexpr float kBeaconRangeSec = kSpokenLeadSec;
 
 constexpr float kBeaconHz = 880.0f;  // A5, clear of the curve beeps and the edge tone
 constexpr float kBeaconBlipSec = 0.05f;
@@ -194,7 +194,8 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
         return;
     }
 
-    const float range = map.MeanSpacing() * kBeaconRangeStations;
+    const float range =
+        std::max(state.speedPerSecond * kBeaconRangeSec, 2.0f * map.MedianHalfWidth());
     float boxX = 0.0f, boxZ = 0.0f;
     if (range <= 0.0f || !NearestBox(state, range, boxX, boxZ)) {
         mBlipTimer = 0.0f;

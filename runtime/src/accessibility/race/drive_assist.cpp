@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "accessibility/a11y_log.h"
 #include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
@@ -26,9 +25,10 @@ constexpr float kPanSmoothTauSec = 0.1f;
 // gentle bend's halfway, a drift on a straight a few degrees.
 constexpr float kFullLeanRad = 30.0f * (3.14159265f / 180.0f);
 
-// The smallest change in pan worth a diagnostic line - a twentieth of the range, about the smallest
-// step the ear places at all.
-constexpr float kLogStep = 0.05f;
+// Ceiling on the aim distance, as a fraction of the lap: a quarter. Past that on a closed loop the
+// aim point stops moving away from the kart and starts coming back round towards it, so a bullet or
+// a star on a short course could otherwise place it behind the kart.
+constexpr float kMaxHorizonLapFraction = 0.25f;
 
 float Fraction(int percent) {
     return std::clamp(static_cast<float>(percent), 0.0f, 100.0f) / 100.0f;
@@ -48,16 +48,12 @@ void DriveAssist::Reset() {
     mSmoothedPan = 0.0f;
     mLastBearingDeg = 0.0f;
     mLastHorizonUnits = 0.0f;
-    mLastLogBucket = 0;
-    mLastLap = -1;
-    mActiveEntry = -1;
-    mApproachEntry = -1;
-    mApproachBeeps = 0;
-    mAnnounced = false;
-    mPhase = 0;
-    mFinishedEntry = -1;
-    mChainAnnounced.clear();
-    mChainGap = 0.0f;
+    mCurveGeneration = 0;
+    mCues.clear();
+    mLastArc = -1.0f;
+    mPendingLandmarks.clear();
+    mPendingRight.clear();
+    mLandmarkBusySec = 0.0f;
 }
 
 // Forza's steering guide, as its own configuration and its players describe it: the bearing
@@ -73,7 +69,8 @@ void DriveAssist::Reset() {
 // Sign, specified by the player (2026-08-27): the engine marks the side the kart is heading for -
 // "curva a la izquierda -> motor a la derecha" - so steering away from the sound is the fix. The
 // aim point on the left means the kart is heading for the right of it. The edge beeps and the
-// off-road tone speak the same language. `invert_steering_pan` flips it.
+// off-road tone speak the same language. `invert_steering_pan` flips the GUIDE only, as Forza's
+// option does: some players want to hear the car turning left, not being brought back to centre.
 void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                                  const Handedness& handedness, int station, float dtSec) {
     const float alpha = dtSec > 0.0f ? 1.0f - std::exp(-dtSec / kPanSmoothTauSec) : 0.0f;
@@ -94,7 +91,10 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         if (floorUnits <= 0.0f) {
             floorUnits = map.MedianHalfWidth();
         }
-        const float horizon = std::max(state.speedPerSecond * AnticipationSeconds(), floorUnits);
+        float horizon = std::max(state.speedPerSecond * AnticipationSeconds(), floorUnits);
+        if (map.LapLength() > 0.0f) {
+            horizon = std::min(horizon, map.LapLength() * kMaxHorizonLapFraction);
+        }
         float aimX = 0.0f, aimZ = 0.0f;
         have = map.PointAtArc(WrapArc(arc + horizon, map.LapLength()), aimX, aimZ);
         if (have) {
@@ -117,20 +117,6 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         mLastHorizonUnits = 0.0f;
     }
     mSmoothedPan += (pan - mSmoothedPan) * alpha;
-
-    // Temporary: the guide's chain in one line, printed when the pan moves a step. Remove with the
-    // other cue diagnostics once the feel is settled.
-    const int bucket = static_cast<int>(pan / kLogStep);
-    if (bucket != mLastLogBucket) {
-        mLastLogBucket = bucket;
-        float offsetNow = 0.0f, corridorNow = 0.0f;
-        map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offsetNow, nullptr, nullptr,
-                            &corridorNow);
-        RT_LOGF(RT_TAG_A11Y, "guide: lat=%.0f bearing=%+.1f horizon=%.0f pan=%+.3f heard=%+.3f\n",
-                static_cast<double>(offsetNow * corridorNow), static_cast<double>(mLastBearingDeg),
-                static_cast<double>(mLastHorizonUnits), static_cast<double>(pan),
-                static_cast<double>(mSmoothedPan));
-    }
 }
 
 void DriveAssist::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,
@@ -140,17 +126,8 @@ void DriveAssist::Tick(const RaceState& state, const CourseMap& map, const Hande
         return;
     }
 
-    // Re-armed every lap: on an oval the curve ahead never changes, and without this the corner
-    // cues would fire on lap one and stay silent forever.
-    if (state.lap != mLastLap) {
-        mLastLap = state.lap;
-        mActiveEntry = -1;
-        mFinishedEntry = -1;
-        mChainAnnounced.clear();
-    }
-
     UpdateSteering(state, map, handedness, station, dtSec);
-    UpdateCurveCues(state, map, station);
+    UpdateCurveCues(state, map, station, dtSec);
 }
 
 }  // namespace a11y::race

@@ -48,9 +48,11 @@ void CourseMap::Clear() {
     mGraph.Clear();
     mPoints.clear();
     mArc.clear();
-    mTurn.clear();
+    mCurvature.clear();
+    mRawTurn.clear();
     mStationForCheckpoint.clear();
     mCurves.clear();
+    ++mCurveGeneration;
     mLapLength = 0.0f;
     mMeanSpacing = 0.0f;
     mMedianHalfWidth = 0.0f;
@@ -179,7 +181,9 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
 
     mGraph.Build(std::move(route), startPoint);
     const bool routeLap = BuildRouteStations();
-    if (!routeLap) {
+    if (routeLap) {
+        ResampleUniform();
+    } else {
         BuildCheckpointStations(checkpoints);
     }
     if (!Loaded()) {
@@ -212,13 +216,104 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
     BuildCheckpointMap(checkpoints);
     // Curvature signs read the right vector, which BuildCheckpointMap settles, so this has to run
     // after it.
-    for (int i = 0; i < StationCount(); ++i) {
-        mTurn[i] = SignedTurnAt(i);
-    }
+    BuildCurvature();
     BuildCurves();
     mRouteBased = routeLap && lapSane;
     return mRouteBased;
 }
+
+// One station per median corridor half-width, the lap's own length scale: fine enough that a
+// corner spans several stations wherever the road could hold one, and the same on every course.
+// The authored points are a route, not a sampling - Mushroom Gorge's are 5,000 units apart on a
+// 750-unit corridor - and every threshold stated per station meant a different thing per course.
+// Station zero stays the route's start point so the checkpoint mapping is unchanged.
+void CourseMap::ResampleUniform() {
+    const int n = StationCount();
+    if (n < kMinStations) {
+        return;
+    }
+    std::vector<float> widths;
+    widths.reserve(static_cast<std::size_t>(n));
+    for (const Station& s : mPoints) {
+        if (s.halfWidth > 0.0f) {
+            widths.push_back(s.halfWidth);
+        }
+    }
+    if (widths.empty()) {
+        return;
+    }
+    std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+    const float spacing = widths[widths.size() / 2];
+
+    std::vector<float> arc(static_cast<std::size_t>(n) + 1, 0.0f);
+    for (int i = 0; i < n; ++i) {
+        const Station& a = mPoints[static_cast<std::size_t>(i)];
+        const Station& b = mPoints[static_cast<std::size_t>(Wrap(i + 1))];
+        arc[static_cast<std::size_t>(i) + 1] = arc[static_cast<std::size_t>(i)] + Hypot2(b.x - a.x, b.z - a.z);
+    }
+    const float lap = arc.back();
+    if (!(spacing > 0.0f) || !(lap > 0.0f)) {
+        return;
+    }
+    const int count = std::max(kMinStations, static_cast<int>(std::lround(lap / spacing)));
+    const float step = lap / static_cast<float>(count);  // exact, so the seam closes
+
+    std::vector<Station> resampled;
+    resampled.reserve(static_cast<std::size_t>(count));
+    int seg = 0;
+    for (int k = 0; k < count; ++k) {
+        const float target = step * static_cast<float>(k);
+        while (seg + 1 < n && arc[static_cast<std::size_t>(seg) + 1] <= target) {
+            ++seg;
+        }
+        const Station& a = mPoints[static_cast<std::size_t>(seg)];
+        const Station& b = mPoints[static_cast<std::size_t>(Wrap(seg + 1))];
+        const float len = arc[static_cast<std::size_t>(seg) + 1] - arc[static_cast<std::size_t>(seg)];
+        const float t = len > 0.0f ? std::clamp((target - arc[static_cast<std::size_t>(seg)]) / len, 0.0f, 1.0f) : 0.0f;
+        Station s;
+        s.x = a.x + (b.x - a.x) * t;
+        s.z = a.z + (b.z - a.z) * t;
+        s.y = a.y + (b.y - a.y) * t;
+        s.halfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * t;
+        resampled.push_back(s);
+    }
+    RT_LOGF(RT_TAG_A11Y, "course map: resampled %d route points to %d stations every %.0f units\n",
+            n, count, static_cast<double>(step));
+    mPoints = std::move(resampled);
+}
+
+// Heading change at each station, then curvature smoothed over one road width (the station and
+// its two neighbours, at one half-width spacing) so a single kinked sample is not a corner.
+void CourseMap::BuildCurvature() {
+    const int n = StationCount();
+    mRawTurn.assign(static_cast<std::size_t>(n), 0.0f);
+    mCurvature.assign(static_cast<std::size_t>(n), 0.0f);
+    if (n < kMinStations) {
+        return;
+    }
+    std::vector<float> raw(static_cast<std::size_t>(n), 0.0f);
+    for (int i = 0; i < n; ++i) {
+        raw[static_cast<std::size_t>(i)] = SignedTurnAt(i);
+        float px, pz, cx, cz, nx, nz;
+        Centre(i - 1, px, pz);
+        Centre(i, cx, cz);
+        Centre(i + 1, nx, nz);
+        const float span = (Hypot2(cx - px, cz - pz) + Hypot2(nx - cx, nz - cz)) * 0.5f;
+        mRawTurn[static_cast<std::size_t>(i)] = raw[static_cast<std::size_t>(i)] * span;
+    }
+    for (int i = 0; i < n; ++i) {
+        mCurvature[static_cast<std::size_t>(i)] =
+            (raw[static_cast<std::size_t>(Wrap(i - 1))] + raw[static_cast<std::size_t>(i)] +
+             raw[static_cast<std::size_t>(Wrap(i + 1))]) /
+            3.0f;
+    }
+}
+
+float CourseMap::CurvatureAt(int i) const {
+    return mCurvature.empty() ? 0.0f : mCurvature[static_cast<std::size_t>(Wrap(i))];
+}
+
+
 
 // The positions arrive already smoothed - RouteGraph::Build does it once, on the way in, so the
 // stations and the lateral offset cannot drift onto two different lines.
@@ -261,7 +356,6 @@ void CourseMap::BuildCheckpointStations(const std::vector<Checkpoint>& checkpoin
 void CourseMap::BuildDerived() {
     const int n = StationCount();
     mArc.resize(n);
-    mTurn.assign(n, 0.0f);
 
     // Arc length runs from station zero and closes the loop, so the lap length is the distance back
     // to the start rather than the distance to the last station.
@@ -301,11 +395,16 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
         return;
     }
 
+    // Each checkpoint is bound from the previous one's station, so the mapping walks the lap in
+    // order instead of letting a crossover snap a midpoint onto the far branch. Only the first is
+    // a global search, having no predecessor to start from.
+    int hint = -1;
     for (std::size_t c = 0; c < checkpoints.size(); ++c) {
         const Checkpoint& cp = checkpoints[c];
         const float midX = (cp.leftX + cp.rightX) * 0.5f;
         const float midZ = (cp.leftZ + cp.rightZ) * 0.5f;
-        mStationForCheckpoint[c] = NearestStation(midX, midZ, /*hint=*/-1);
+        hint = NearestStation(midX, midZ, hint);
+        mStationForCheckpoint[c] = hint;
     }
 
     // A checkpoint states its own left and right points, which is the only place in the data that
@@ -360,14 +459,6 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
                 bound);
     }
     mHintWindow = std::min(widest + 1, bound);
-}
-
-float CourseMap::SpanAt(int i) const {
-    float px, pz, cx, cz, nx, nz;
-    Centre(i - 1, px, pz);
-    Centre(i, cx, cz);
-    Centre(i + 1, nx, nz);
-    return (Hypot2(cx - px, cz - pz) + Hypot2(nx - cx, nz - cz)) * 0.5f;
 }
 
 // Curvature at a station, signed positive to the right, in radians of heading change per unit of
@@ -432,14 +523,24 @@ float CourseMap::ArcSigned(int from, int to) const {
     return d;
 }
 
-float CourseMap::ArcSignedTo(float fromArc, int toStation) const {
+float CourseMap::WrapForward(float d) const {
     if (!Loaded() || mLapLength <= 0.0f) {
         return 0.0f;
     }
-    float d = ArcAt(toStation) - fromArc;
-    while (d < 0.0f) {
-        d += mLapLength;
-    }
+    d = std::fmod(d, mLapLength);
+    return d < 0.0f ? d + mLapLength : d;
+}
+
+float CourseMap::ArcForwardTo(float fromArc, int toStation) const {
+    return WrapForward(ArcAt(toStation) - fromArc);
+}
+
+float CourseMap::ArcForwardFrom(int fromStation, float toArc) const {
+    return WrapForward(toArc - ArcAt(fromStation));
+}
+
+float CourseMap::ArcSignedTo(float fromArc, int toStation) const {
+    float d = ArcForwardTo(fromArc, toStation);
     if (d > mLapLength * 0.5f) {
         d -= mLapLength;
     }
@@ -656,11 +757,6 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         RightVector(i, rightX[i], rightZ[i]);
     }
 
-    // Kept so the whole repair can be undone if it turns out to have changed the shape of the
-    // course rather than the placement of the line - see the corner check below.
-    const std::vector<Station> before = mPoints;
-    const std::size_t curvesBefore = mCurves.size();
-
     float worst = 0.0f;
     for (int i = 0; i < n; ++i) {
         const float dx = rightX[i] * shifts[i];
@@ -670,37 +766,16 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         worst = std::max(worst, std::fabs(shifts[i]));
     }
 
-    // Arc, curvature and corners all descend from the positions, so they are rebuilt. The
-    // right-hand sign and the checkpoint mapping are NOT: the sign is the mod's one direction
-    // convention and re-voting it on a moved line could flip every panned cue mid-race.
+    // Arcs descend from the positions, so they are rebuilt and the corners' landmarks re-read
+    // from them. The corners themselves, the curvature they came from, the right-hand sign and
+    // the checkpoint mapping are NOT: the corners describe the road, and the sign is the mod's
+    // one direction convention. (A racing line that crosses the road between two corners bends
+    // in an S there; counting that S as corners and reverting the whole line on it kept every
+    // course with such a crossing on the CPU's route until 2026-09-03.)
+    // The corner list is the same list, so the generation stays: a shift landing on a lap
+    // boundary must not un-say what was said about the corners ahead.
     BuildDerived();
-    for (int i = 0; i < n; ++i) {
-        mTurn[i] = SignedTurnAt(i);
-    }
-    BuildCurves();
-
-    // The placement moves the line WITHIN the road; it must never change what the course is. A
-    // line that adds a corner has bent instead of straightened, and the player is then told to
-    // turn where the track does not - which happened on 2026-08-31 with an uncapped correction.
-    // Least curvature should make this unreachable; this is the check that says so out loud.
-    if (mCurves.size() > curvesBefore) {
-        const std::size_t curvesAfter = mCurves.size();  // read before the rebuild restores it
-        mPoints = before;
-        BuildDerived();
-        for (int i = 0; i < n; ++i) {
-            mTurn[i] = SignedTurnAt(i);
-        }
-        BuildCurves();
-        // The stations are back where the course authored them, so the edge map must measure from
-        // there too - otherwise SideAtArc describes a line this map no longer has.
-        EdgeMap::ConfirmShift(false);
-        RT_LOGF(RT_TAG_A11Y,
-                "course map: line repair REVERTED - it added %d corner(s) to the course (%d -> %d), "
-                "worst shift %.0f\n",
-                static_cast<int>(curvesAfter - curvesBefore), static_cast<int>(curvesBefore),
-                static_cast<int>(curvesAfter), static_cast<double>(worst));
-        return false;
-    }
+    RefreshCurveArcs();
 
     // The placement stuck: the edge map rebases its distances onto the line the stations now have.
     EdgeMap::ConfirmShift(true);
@@ -709,46 +784,6 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
             "lap %.0f\n",
             moved, n, static_cast<double>(worst), static_cast<double>(mLapLength));
     return true;
-}
-
-int CourseMap::StationAhead(int station, float distance) const {
-    const int n = StationCount();
-    for (int step = 1; step < n; ++step) {
-        const int i = Wrap(station + step);
-        if (ArcForward(station, i) >= distance) {
-            return i;
-        }
-    }
-    return Wrap(station - 1);
-}
-
-void CourseMap::PointAhead(int station, float distance, float& x, float& z) const {
-    Centre(station, x, z);
-    if (!Loaded() || distance <= 0.0f) {
-        return;
-    }
-
-    const int n = StationCount();
-    for (int step = 0; step < n; ++step) {
-        const int from = Wrap(station + step);
-        const int to = Wrap(station + step + 1);
-        const float travelled = ArcForward(station, from);
-        const float leg = ArcForward(from, to);
-        if (leg <= 0.0f) {
-            continue;
-        }
-        if (travelled + leg < distance) {
-            continue;
-        }
-        // The remaining distance falls inside this leg, so the target sits partway along it.
-        const float t = std::clamp((distance - travelled) / leg, 0.0f, 1.0f);
-        float ax, az, bx, bz;
-        Centre(from, ax, az);
-        Centre(to, bx, bz);
-        x = ax + (bx - ax) * t;
-        z = az + (bz - az) * t;
-        return;
-    }
 }
 
 }  // namespace a11y::race

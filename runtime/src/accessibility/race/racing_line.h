@@ -21,13 +21,16 @@ struct LineBand {
 //
 // A bound-constrained least-squares problem solved by an active set: the unconstrained line is
 // solved exactly, stations that leave their band are pinned to it, and the rest re-solved until
-// nothing moves. One step per frame, because each solve is a dense factorisation.
+// nothing moves. Each solve is a banded factorisation, linear in the station count, so a caller
+// can afford several iterations per frame (StepFor).
 class RacingLine {
 public:
     // `settledUnits` is the move below which a station counts as placed.
     void Begin(const CourseMap& map, std::vector<LineBand> bands, float settledUnits);
     // One active-set iteration. True once settled or out of iterations; read Shifts() then.
     bool Step();
+    // Iterates until settled or the budget is spent, always at least once. Same return as Step.
+    bool StepFor(double budgetMs);
     bool Done() const { return mDone; }
     // Towards the track's right, in station order, all inside their bands.
     const std::vector<float>& Shifts() const { return mShift; }
@@ -36,18 +39,36 @@ public:
 
 private:
     bool SolveFree();
+    bool FactorBand(int rows);
+    void BandSolve(int rows, double* v) const;
+    double HAt(int i, int j) const;
+    double FreeMove(int i) const;
+    void LogKkt();
 
     std::vector<LineBand> mBands;
     std::vector<float> mShift;
     // Which bound each station is pinned to: 0 free, -1 low, +1 high.
     std::vector<int> mPin;
-    // Quadratic model of the bending energy about the authored line: J(a) = a'Ha/2 + g'a.
-    std::vector<double> mH;
+    // Quadratic model of the bending energy about the authored line: J(a) = a'Ha/2 + g'a. H is
+    // held as a periodic band - row i holds H(i, i+d) for d in [-2,+2] - because a second
+    // difference couples a station to nothing further than two stations away.
+    std::vector<double> mHBand;
     std::vector<double> mG;
+    // Scratch for SolveFree, sized once in Begin: a solve runs every iteration and these were a
+    // fresh heap allocation each time.
+    std::vector<int> mFree;
+    std::vector<double> mRhs;
+    // Lower banded Cholesky of the leading free block, three offsets per row.
+    std::vector<double> mBandL;
+    // The trailing free columns, column-major: the raw block and its banded solve.
+    std::vector<double> mBorder;
+    std::vector<double> mBorderSolved;
     float mSettledUnits = 0.0f;
     int mIterations = 0;
+    int mMaxIterations = 0;
     int mPinned = 0;
     bool mDone = false;
+    bool mLoggedKkt = false;
 };
 
 }  // namespace a11y::race

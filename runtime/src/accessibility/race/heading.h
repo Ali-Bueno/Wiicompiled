@@ -34,6 +34,8 @@ public:
 
     // The kart's right-hand unit vector. The ONE place that derivation lives - every cue that
     // needs "the kart's right" takes it from here, so no module can drift onto its own sign.
+    // ZERO until the convention has been established (Known()), because half the time the default
+    // one is the mirror of the truth: a caller must not read a side out of it unchecked.
     void RightVector(const RaceState& state, float& x, float& z) const;
 
 private:

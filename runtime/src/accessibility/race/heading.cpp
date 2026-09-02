@@ -22,6 +22,11 @@ void Handedness::Observe(const RaceState& state, const CourseMap& map, int stati
 }
 
 void Handedness::RightVector(const RaceState& state, float& x, float& z) const {
+    x = 0.0f;
+    z = 0.0f;
+    if (!mKnown) {
+        return;  // no convention yet: a zero vector names no side, the default convention guesses
+    }
     x = mRightIsFzNegFx ? state.forwardZ : -state.forwardZ;
     z = mRightIsFzNegFx ? -state.forwardX : state.forwardX;
 }

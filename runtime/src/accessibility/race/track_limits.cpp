@@ -52,6 +52,16 @@ void TrackLimits::Reset() {
     CueService::Instance().Stop(CueChannel::Edge);
 }
 
+// Either held cue can own the Edge channel, so both flags are cleared together.
+void TrackLimits::StopEdgeChannel() {
+    if (!mHoldingTone && !mHoldingEdge) {
+        return;
+    }
+    CueService::Instance().Stop(CueChannel::Edge);
+    mHoldingTone = false;
+    mHoldingEdge = false;
+}
+
 // The surface flag has to read the same way for a debounce window before the answer flips, so a
 // boundary flicker can neither chop the held tone into a warble nor queue a backlog of speech.
 bool TrackLimits::SurfaceSaysOffRoad(bool offRoad, float dtSec) {
@@ -108,7 +118,13 @@ void TrackLimits::UpdateSurface(bool offRoad) {
     // Temporary, same reason as the edge logs.
     RT_LOGF(RT_TAG_A11Y, "surface: %s (edge kind %s)\n", offRoad ? "off_road" : "on_road",
             EdgeKindName(mNearEdgeKind));
-    CueService::Instance().PlayOneShot(CueChannel::Surface, SurfaceChangeCue(offRoad, mSideRight));
+    audio::CueSpec note = SurfaceChangeCue(offRoad, mSideRight);
+    // Only UpdateEdge measures a side, so with edge cues off or no course map there is no danger
+    // ear to lean to and the note is centred rather than pinned to the left by an unset flag.
+    if (!mSideKnown) {
+        note.pan = 0.0f;
+    }
+    CueService::Instance().PlayOneShot(CueChannel::Surface, note);
 }
 
 // Debounced like the surface, and re-announced while it holds: wrong way is a state the player can
@@ -141,10 +157,7 @@ void TrackLimits::Tick(const RaceState& state, const CourseMap& map, const Hande
                        int station, float dtSec) {
     if (!state.valid || !state.driving) {
         mHaveLastForward = false;
-        if (mHoldingTone) {
-            CueService::Instance().Stop(CueChannel::Edge);
-            mHoldingTone = false;
-        }
+        StopEdgeChannel();
         return;
     }
     // `state.offRoad` alone is not enough: UpdateOffroad stops writing it while airborne, so it
@@ -155,9 +168,8 @@ void TrackLimits::Tick(const RaceState& state, const CourseMap& map, const Hande
     // race record, and gating them on a loaded map silenced both on any course that never built.
     if (map.Loaded() && RuntimeConfigFile::AccessibilityEdgeCues()) {
         UpdateEdge(state, map, handedness, station, dtSec, offRoad);
-    } else if (mHoldingTone) {
-        CueService::Instance().Stop(CueChannel::Edge);
-        mHoldingTone = false;
+    } else {
+        StopEdgeChannel();
     }
     UpdateSurface(offRoad);
     UpdateWrongWay(state.wrongWay, dtSec);

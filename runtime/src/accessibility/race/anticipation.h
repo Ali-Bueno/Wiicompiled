@@ -27,6 +27,16 @@ inline constexpr float kSpokenLeadSec = 4.0f;
 inline constexpr float kCountdownLeadSec[] = {2.5f, 1.4f, 0.7f};
 inline constexpr int kCountdownStages = 3;
 
+// Where a rule has to be a property of the COURSE - which corners form a run, which gap is a
+// straight - it is stated as a distance, the same at every engine class, by the player's
+// decision (2026-09-03). The conversion uses one reference speed: the game's Standard Kart M
+// with Mario at 150cc, 79.77 units/frame at 50 fps (kartParam.bin + driverParam.bin, the
+// vehicle the radius ladder in course_curves.cpp is derived from too).
+inline constexpr float kReferenceSpeedUnitsPerSec = 79.77f * 50.0f;
+// A straight is a gap the whole countdown fits in at the reference speed; a shorter gap chains
+// the next corner to the previous one (it becomes a follower: no call of its own, no countdown).
+inline constexpr float kStraightUnits = kReferenceSpeedUnitsPerSec * kCountdownLeadSec[0];
+
 inline float AnticipationSeconds() {
     const float knob =
         std::clamp(static_cast<float>(RuntimeConfigFile::AccessibilitySteeringLookAhead()), 0.0f,

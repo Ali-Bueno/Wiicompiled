@@ -69,11 +69,30 @@ constexpr std::uint32_t kMatrixForwardColumn = 2;
 // kart stats, and it needs no immunity special case.
 constexpr float kOnRoadMultiplier = 1.0f;
 
+// Two unit headings state the same axis when they agree within 45 degrees: the body matrix's
+// columns are a right angle apart, so half of that is a boundary no neighbouring axis can cross.
+constexpr float kHeadingAgreeDot = 0.70710678f;  // cos(45 degrees)
+
 RaceState g_state;
 
-// Survives across frames on purpose: ReadRaceState resets g_state to RaceState{} on every call, so
-// the last-known-on-ground surface has nowhere else to live while the kart is airborne.
+// Everything below survives across frames on purpose and is cleared by ResetRaceState, which a
+// function-local static would outlive - handing the next race the previous one's cached answer.
+
+// ReadRaceState resets g_state to RaceState{} on every call, so the last-known-on-ground surface
+// has nowhere else to live while the kart is airborne.
 bool g_lastGroundOffRoad = false;
+
+// The body hitbox walk is fixed for the race, so it is cached per hitbox group.
+std::uint32_t g_hitboxGroup = 0;
+float g_bodyHalfWidth = 0.0f;
+
+// Whether the body matrix's column 2 really is the forward axis - checked against the velocity
+// heading while the kart moves - and the last heading it had while moving. Both stand in at a
+// standstill, where the velocity heading has gone stale.
+enum class ColumnCheck { Unchecked, Forward, NotForward };
+ColumnCheck g_columnCheck = ColumnCheck::Unchecked;
+float g_movingForwardX = 0.0f;
+float g_movingForwardZ = 0.0f;
 
 // One entry of Kart::Manager's array, with its sub-object table.
 bool ResolveKart(std::uint32_t karts, std::uint32_t index, std::uint32_t& kartOut,
@@ -119,45 +138,66 @@ bool FindPlayerKart(std::uint32_t manager, int playerId, std::uint32_t& kartOut,
     return false;
 }
 
-// Which way the kart is pointing. Preferred over a matrix column because it needs no assumption
-// about which local axis is forward - the game multiplies this vector by the scalar speed to get
-// velocity, so it is the forward axis by construction. It goes stale at a standstill, which is the
-// only case where the body matrix has to stand in.
-bool ReadHeading(std::uint32_t movement, std::uint32_t holder, float speed, float& fx, float& fz) {
-    float tx = 0.0f, ty = 0.0f, tz = 0.0f;
-    if (std::fabs(speed) > 0.0f && TryVec3(movement + kMovementHeading, tx, ty, tz)) {
-        const float len = std::sqrt(tx * tx + tz * tz);
-        if (len > 0.0f) {
-            fx = tx / len;
-            fz = tz / len;
-            return true;
-        }
-    }
-
-    // Column 2 of the body matrix. Which column is forward is a Wii convention the translation does
-    // not state, so this is only a fallback while stopped, where being wrong changes nothing the
-    // player can hear.
-    const std::uint32_t column = holder + kHolderBodyMatrix + kMatrixForwardColumn * 4;
-    float mx = 0.0f, mz = 0.0f;
-    if (!TryFloat(column, mx) || !TryFloat(column + 2 * kMatrixRowBytes, mz)) {
-        return false;
-    }
-    const float len = std::sqrt(mx * mx + mz * mz);
+// Normalises a horizontal vector in place; false when it states no direction.
+bool Normalize2(float& x, float& z) {
+    const float len = std::sqrt(x * x + z * z);
     if (len <= 0.0f) {
         return false;
     }
-    fx = mx / len;
-    fz = mz / len;
+    x /= len;
+    z /= len;
     return true;
+}
+
+// Column 2 of the body matrix, as a horizontal unit vector.
+bool ReadForwardColumn(std::uint32_t holder, float& x, float& z) {
+    const std::uint32_t column = holder + kHolderBodyMatrix + kMatrixForwardColumn * 4;
+    return TryFloat(column, x) && TryFloat(column + 2 * kMatrixRowBytes, z) && Normalize2(x, z);
+}
+
+// Which way the kart is pointing. Preferred over a matrix column because it needs no assumption
+// about which local axis is forward - the game multiplies this vector by the scalar speed to get
+// velocity, so it is the forward axis by construction. It goes stale at a standstill, and the
+// steering guide is the player's recovery signal exactly there, so the column only stands in once
+// it has been shown to agree with this vector while the kart was moving.
+bool ReadHeading(std::uint32_t movement, std::uint32_t holder, float speed, float& fx, float& fz) {
+    float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+    float mx = 0.0f, mz = 0.0f;
+    if (std::fabs(speed) > 0.0f && TryVec3(movement + kMovementHeading, tx, ty, tz) &&
+        Normalize2(tx, tz)) {
+        // Settled here and once: this is the only moment the game's own forward axis is live to
+        // check the column against.
+        if (g_columnCheck == ColumnCheck::Unchecked && ReadForwardColumn(holder, mx, mz)) {
+            g_columnCheck = (tx * mx + tz * mz) >= kHeadingAgreeDot ? ColumnCheck::Forward
+                                                                    : ColumnCheck::NotForward;
+        }
+        fx = tx;
+        fz = tz;
+        g_movingForwardX = tx;
+        g_movingForwardZ = tz;
+        return true;
+    }
+
+    if (g_columnCheck == ColumnCheck::Forward && ReadForwardColumn(holder, mx, mz)) {
+        fx = mx;
+        fz = mz;
+        return true;
+    }
+    if (g_movingForwardX != 0.0f || g_movingForwardZ != 0.0f) {
+        fx = g_movingForwardX;  // a rejected column: hold the last heading the kart really had
+        fz = g_movingForwardZ;
+        return true;
+    }
+    // Nothing has moved yet - the start line - so the unchecked column is all there is, and
+    // without it the whole state would read as invalid through the countdown.
+    return g_columnCheck == ColumnCheck::Unchecked && ReadForwardColumn(holder, fx, fz);
 }
 
 // The x extent of the body's hitbox spheres, the same pass UpdateBoundingRadius makes per axis.
 // Fixed for the race, so it is only walked once per kart.
 float ReadBodyHalfWidth(std::uint32_t hitboxGroup) {
-    static std::uint32_t s_group = 0;
-    static float s_halfWidth = 0.0f;
-    if (hitboxGroup == s_group && s_halfWidth > 0.0f) {
-        return s_halfWidth;
+    if (hitboxGroup == g_hitboxGroup && g_bodyHalfWidth > 0.0f) {
+        return g_bodyHalfWidth;
     }
     std::uint16_t count = 0;
     std::uint32_t hitboxes = 0;
@@ -177,8 +217,8 @@ float ReadBodyHalfWidth(std::uint32_t hitboxGroup) {
         }
         halfWidth = std::max(halfWidth, radius + std::fabs(x));
     }
-    s_group = hitboxGroup;
-    s_halfWidth = halfWidth;
+    g_hitboxGroup = hitboxGroup;
+    g_bodyHalfWidth = halfWidth;
     return halfWidth;
 }
 
@@ -206,6 +246,11 @@ int ReadKartObjects(std::uint32_t* out, int maxCount) {
 void ResetRaceState() {
     g_state = RaceState{};
     g_lastGroundOffRoad = false;
+    g_hitboxGroup = 0;
+    g_bodyHalfWidth = 0.0f;
+    g_columnCheck = ColumnCheck::Unchecked;
+    g_movingForwardX = 0.0f;
+    g_movingForwardZ = 0.0f;
     ResetRaceRecord();
 }
 

@@ -285,7 +285,7 @@ void Tick() {
 
     // The real road edges, measured a couple of stations per tick until the course is covered,
     // then the racing line placed inside them around the kart's own size.
-    EdgeMap::Tick(g_map, state.valid ? state.bodyHalfWidth : 0.0f);
+    EdgeMap::Tick(g_map, state.valid ? state.bodyHalfWidth : 0.0f, state.frameSec);
     // Behind the pause menu the game advances no time, so neither may any cue timer.
     const float dtSec = state.paused ? 0.0f : stepSec;
     // The cue renderer works in whole guest frames too, and takes their duration from here rather
@@ -306,9 +306,15 @@ void Tick() {
 
     // Once the edges are known the line becomes the racing line inside them (EdgeMap). Deferred to a moment where moving the line under the kart cannot teleport the guide: the kart
     // not driving, or a lap boundary, whichever comes first.
-    const bool lapChanged = g_lastShiftLap >= 0 && state.lap != g_lastShiftLap;
-    g_lastShiftLap = state.lap;
-    if (EdgeMap::Ready() && !g_map.RoadShifted() && (!state.driving || lapChanged)) {
+    // Only a READ lap counts: a failed read blanks `lap` to 0 and would fake a lap boundary.
+    const bool lapChanged = state.valid && g_lastShiftLap >= 0 && state.lap != g_lastShiftLap;
+    if (state.valid) {
+        g_lastShiftLap = state.lap;
+    }
+    // `state.valid &&`: a failed guest read blanks the state, and `driving` goes false with it -
+    // which is not the kart standing still, and is no moment to move the line under it.
+    if (EdgeMap::Ready() && !g_map.RoadShifted() &&
+        ((state.valid && !state.driving) || lapChanged)) {
         g_map.ApplyRoadShift(EdgeMap::Shifts());
     }
 

@@ -30,6 +30,11 @@ constexpr int kEdgeMapSettleFrames = kCourseSettleFrames;
 // march cannot resolve anything finer than its own step.
 constexpr float kEdgeMapMinDistance = kKclLateralStepUnits;
 
+// Share of one guest frame the line solve may take. A quarter leaves the other three for the frame
+// the game still has to render, and matches the order the station sweep above already spends.
+constexpr double kLineSolveFrameFraction = 0.25;
+constexpr double kMillisecondsPerSecond = 1000.0;
+
 enum class EdgeMapState { Idle, Running, Solving, Done };
 
 EdgeMapState g_edgeMapState = EdgeMapState::Idle;
@@ -37,7 +42,10 @@ std::vector<StationEdges> g_edges;
 // Places the line once the sweep is complete, one iteration per tick.
 RacingLine g_line;
 int g_cursor = 0;
-int g_frames = 0;
+// Only the wait for the collision mesh to appear. Shared with the sweep's own tick count it used
+// to be already expired by the time a mesh dropped out mid-build, which finished the map with half
+// its stations unmeasured and no shifts collected.
+int g_meshWaitFrames = 0;
 int g_bothEdges = 0;
 int g_fallEdges = 0;
 // The course's real road scale, in world units. Anything measuring a length in track widths takes
@@ -191,12 +199,14 @@ void CollectShifts() {
 }
 
 // Over every measured side rather than per station, so one blind side does not discard the other.
+// An Open side is not a width - it is the march cap - and counting it inflated Coconut Mall's
+// median to 3250 (33% open sides), a warning distance wider than its 875-unit corridors.
 void MeasureMedianHalfWidth() {
     std::vector<float> sides;
     sides.reserve(g_edges.size() * 2);
     for (const StationEdges& e : g_edges) {
-        if (e.leftValid) { sides.push_back(e.leftDistance); }
-        if (e.rightValid) { sides.push_back(e.rightDistance); }
+        if (e.leftValid && e.leftKind != EdgeKind::Open) { sides.push_back(e.leftDistance); }
+        if (e.rightValid && e.rightKind != EdgeKind::Open) { sides.push_back(e.rightDistance); }
     }
     g_medianHalfWidth = 0.0f;
     if (!sides.empty()) {
@@ -301,7 +311,7 @@ void EdgeMap::Reset() {
     g_edgeMapState = EdgeMapState::Idle;
     g_edges.clear();
     g_cursor = 0;
-    g_frames = 0;
+    g_meshWaitFrames = 0;
     g_bothEdges = 0;
     g_fallEdges = 0;
     g_medianHalfWidth = 0.0f;
@@ -375,7 +385,7 @@ bool EdgeMap::SideAtArc(const CourseMap& map, float arc, bool right, float& dist
     return distance > 0.0f;
 }
 
-void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth) {
+void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth, float frameSec) {
     if (g_edgeMapState == EdgeMapState::Done) {
         return;
     }
@@ -385,7 +395,11 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth) {
             return;
         }
         const auto started = std::chrono::steady_clock::now();
-        const bool placed = g_line.Step();
+        // A slice of the guest frame, because the solve shares it with everything that has to
+        // render in it; the rest of the frame stays the game's. A zero period (no kart yet) falls
+        // back to the one iteration per tick this used to do.
+        const bool placed = g_line.StepFor(static_cast<double>(frameSec) *
+                                           kLineSolveFrameFraction * kMillisecondsPerSecond);
         g_worstTickMs = std::max(
             g_worstTickMs,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
@@ -410,10 +424,13 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth) {
         return;
     }
     if (!KclRoad::Capture()) {
-        if (++g_frames >= kEdgeMapSettleFrames) {
+        // Only from Idle. A mesh that goes away under a running sweep leaves it waiting instead of
+        // declaring a half-measured map done, which Ready() would then publish with no shifts.
+        if (g_edgeMapState == EdgeMapState::Idle && ++g_meshWaitFrames >= kEdgeMapSettleFrames) {
             g_edgeMapState = EdgeMapState::Done;  // no mesh: every station stays Unknown and the cue
-            RT_LOGF(RT_TAG_A11Y,          // falls back to the corridor rather than going quiet
-                    "edge map: no collision mesh after %d frames, corridor cues only\n", g_frames);
+            RT_LOGF(RT_TAG_A11Y,                  // falls back to the corridor rather than go quiet
+                    "edge map: no collision mesh after %d frames, corridor cues only\n",
+                    g_meshWaitFrames);
         }
         return;
     }
@@ -443,7 +460,6 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth) {
         return;
     }
 
-    ++g_frames;
     // Temporary: the probe is only background work if it really is, and only a clock says so.
     const auto started = std::chrono::steady_clock::now();
     for (int done = 0; done < kEdgeMapStationsPerTick && g_cursor < map.StationCount(); ++done) {

@@ -25,7 +25,8 @@ inline constexpr float kDefaultFramePeriodSec = 1.0f / 60.0f;
 enum class CueChannel {
     Edge,     // track limits: beeps near the edge, a tone on it, held tone past it
     Surface,  // leaving the road and returning to it
-    Curve,    // curve approach, entry, apex and exit beeps
+    Curve,      // curve entry, apex and exit beeps
+    Countdown,  // the corner countdown, its own voice so a landmark beep never eats a stage
     ItemBox,  // nearest item box proximity blip
     Hazard,   // shells, bananas, obstacles
     Count,

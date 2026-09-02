@@ -63,10 +63,10 @@ struct StationEdges {
 // Built a couple of stations per tick so it never costs a frame spike, cached for the course, and
 // dropped whenever the course map is (which is also what a line_source change does).
 struct EdgeMap {
-    // Call once per frame with the course map and the player kart's body half-width (0 while no
-    // kart reads: the line waits for it). Does nothing once the course is measured and the line
-    // placed.
-    static void Tick(const CourseMap& map, float kartHalfWidth);
+    // Call once per frame with the course map, the player kart's body half-width (0 while no kart
+    // reads: the line waits for it) and the guest frame's duration, which bounds how long the line
+    // solve may run. Does nothing once the course is measured and the line placed.
+    static void Tick(const CourseMap& map, float kartHalfWidth, float frameSec);
     static void Reset();
 
     // The measured edges at a station, or an invalid entry when that station never read - the

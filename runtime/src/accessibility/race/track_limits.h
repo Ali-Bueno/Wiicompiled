@@ -12,6 +12,7 @@ class Handedness;
 
 // The beeps close up as the edge nears, which is the urgency signal. Here rather than in the .cpp
 // because every flap guard in this module is derived from the near interval.
+// Both chosen by ear when the assist first shipped (2026-08-27); nothing derives them.
 inline constexpr float kIntervalFarSec = 0.45f;
 inline constexpr float kIntervalNearSec = 0.09f;
 
@@ -48,6 +49,9 @@ private:
     void UpdateWrongWay(bool wrongWay, float dtSec);
     // Whether the surface has really changed, with the game's frame-to-frame flap filtered out.
     bool SurfaceSaysOffRoad(bool offRoad, float dtSec);
+    // Silences whichever held cue owns the Edge channel: both share it, so stopping only the
+    // off-road tone left the on-the-edge tone sounding for the rest of the race.
+    void StopEdgeChannel();
     // Which ear the cues pan to, held until a new side has lasted longer than a segment jump.
     bool PannedSideIsRight(bool towardsRight, bool haveOffset, float dtSec);
 

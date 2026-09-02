@@ -38,33 +38,31 @@ public:
     float LastHorizonUnits() const { return mLastHorizonUnits; }
 
 private:
+    // Everything one corner has said this pass, keyed by its index in the course map. Cleared when
+    // the corner falls out of play (passed, or the kart teleported), so an oval re-arms by itself.
+    struct CornerCues {
+        bool called = false;
+        int stagesDone = 0;  // countdown stages fired or forfeited
+        int phase = 0;       // 0 before the entry, 1 past it, 2 past the apex, 3 past the exit
+    };
+
     void UpdateSteering(const RaceState& state, const CourseMap& map,
                         const Handedness& handedness, int station, float dtSec);
-    void UpdateCurveCues(const RaceState& state, const CourseMap& map, int station);
+    void UpdateCurveCues(const RaceState& state, const CourseMap& map, int station, float dtSec);
+    void RebindCurves(const CourseMap& map);
 
     float mSmoothedPan = 0.0f;
     float mLastBearingDeg = 0.0f;
     float mLastHorizonUnits = 0.0f;
-    int mLastLogBucket = 0;
 
-    int mLastLap = -1;
-
-    // The corner currently being described, identified by its entry station. Every counter below
-    // belongs to it and resets when it changes.
-    int mActiveEntry = -1;
-    // The corner the countdown is leading - the one AHEAD, which differs from the one being
-    // described while the kart is still inside the previous corner.
-    int mApproachEntry = -1;
-    int mApproachBeeps = 0;
-    bool mAnnounced = false;
-    // 0 before the entry, 1 past it, 2 past the apex, 3 past the exit.
-    int mPhase = 0;
-    // The corner whose exit beep has already sounded, so it cannot take the focus back.
-    int mFinishedEntry = -1;
-    // The chain gap frozen at the last run's call (units), shared by its phrase and countdown veto.
-    float mChainGap = 0.0f;
-    // Corners already spoken inside a chained call ("left, then right"). Cleared each lap.
-    std::vector<int> mChainAnnounced;
+    unsigned mCurveGeneration = 0;
+    std::vector<CornerCues> mCues;
+    float mLastArc = -1.0f;
+    float mLastX = 0.0f, mLastZ = 0.0f;
+    // Landmark beeps waiting their turn on the single curve voice, and the time until it is free.
+    std::vector<float> mPendingLandmarks;
+    std::vector<bool> mPendingRight;
+    float mLandmarkBusySec = 0.0f;
 };
 
 // Menu preview: plays a representative corner-entry beep as a one-shot.
