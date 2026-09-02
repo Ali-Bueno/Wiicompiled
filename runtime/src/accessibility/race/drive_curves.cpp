@@ -24,25 +24,12 @@ using audio::Waveform;
 constexpr float kCallLeadSec = kSpokenLeadSec;
 constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cpp:80
 
-// Two corners are chained - "no real straight between them" - when the gap cannot fit the
-// follower's OWN countdown, so it can never be warned separately and has to ride in the leader's
-// phrase. Seconds at the current speed, like every other lead here, because a fixed station count
-// reads differently on every route density.
-//
-// Measured against the LAST beep (0.7 s) this was far too narrow, and a logged race showed the
-// hole it leaves: gaps of one route station on that course were 1.15 s, outside the chain, so the
-// follower got neither the leader's phrase nor a countdown of its own. Curve 6 ("hairpin right")
-// was called 0.7 s before its entry with no beeps, and curve 34 ("hairpin left") 0.2 s before,
-// every lap. Widening it to the FIRST beep was tried once and rejected because it muted the
-// follower's countdown everywhere; the player has since specified that muting as the behaviour
-// they want, so the objection no longer applies.
-//
-// The player's rule for a run of corners, 2026-08-28: "los cues de cuenta regresiva suenan para la
-// primera. pero luego para la segunda y sucessivamente no suena mas hasta acabarse las curvas y
-// haber una recta por la cual respirar". The countdown belongs to the run, not to each corner in
-// it: it leads the first, and nothing else counts down until a straight wide enough to breathe in
-// resets the pattern. Every corner still keeps its own entry/apex/exit beeps.
-constexpr int kChainLeadStage = 0;
+// Two corners are chained - "no real straight between them" - when the follower's own call could
+// not be spoken at its full lead without naming it while the leader is still being driven. The
+// phrase waits for the leader's exit, so any gap shorter than the spoken lead lands compressed:
+// exit beep, call and countdown in the same breath (Moo Moo Meadows 7->10, a 2.8 s gap under the
+// old 2.5 s window). Seconds at speed, like every lead here. History: STATUS.md, "Chained corners".
+constexpr float kChainLeadSec = kSpokenLeadSec;
 constexpr int kMaxChain = 3;
 
 // A corner stays the one being described until its exit is this far behind, so the cues do not flip
@@ -203,11 +190,10 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
 
     // A corner that follows the previous one with no real straight between was already announced
     // and counted down as part of that call, so it gets its own traversal beeps and nothing else.
-    // Scaled with the countdown by construction: the chain window IS "the gap too small to fit the
-    // follower's own countdown", so widening the countdown must widen what counts as chained, or
-    // corners would start falling into the hole between the two rules.
-    const float chainGap = state.speedPerSecond * kCountdownLeadSec[kChainLeadStage];
-    const bool chained = map.IsChainFollower(*upcoming, chainGap);
+    // The gap is the one frozen at the run's call, NOT the current speed: re-evaluated per frame it
+    // flipped a borderline pair in and out of the chain as the speed drifted, muting stages of a
+    // countdown the phrase had not covered.
+    const bool chained = map.IsChainFollower(*upcoming, mChainGap);
     // Spoken once: as its own call or inside a predecessor's chained phrase. The ledger also
     // vetoes the countdown - the gap is speed-relative, so a corner merged into a phrase at
     // approach speed must not "unchain" and count down just because the kart arrives slower.
@@ -280,13 +266,17 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         mAnnounced = true;
         std::string phrase = CurvePhrase(*upcoming);
 
+        // One gap per run, sampled here at approach speed and shared with the countdown veto, so
+        // the phrase and the beeps agree on which corners belong to it.
+        mChainGap = state.speedPerSecond * kChainLeadSec;
+
         // Walk forward while each next corner starts too soon after the last one ended to count as
         // a straight, so a chicane is heard as one shape instead of two late warnings.
         const Curve* last = upcoming;
         for (int n = 1; n < kMaxChain; ++n) {
             const Curve* following = map.NextCurve(last->exit);
             if (following == nullptr || following->entry == upcoming->entry ||
-                map.ArcForward(last->exit, following->entry) > chainGap) {
+                map.ArcForward(last->exit, following->entry) > mChainGap) {
                 break;
             }
             phrase += loc::Get("curve_then");

@@ -61,6 +61,8 @@ private:
     int mPhase = 0;
     // The corner whose exit beep has already sounded, so it cannot take the focus back.
     int mFinishedEntry = -1;
+    // The chain gap frozen at the last run's call (units), shared by its phrase and countdown veto.
+    float mChainGap = 0.0f;
     // Corners already spoken inside a chained call ("left, then right"). Cleared each lap.
     std::vector<int> mChainAnnounced;
 };

@@ -57,6 +57,7 @@ void DriveAssist::Reset() {
     mPhase = 0;
     mFinishedEntry = -1;
     mChainAnnounced.clear();
+    mChainGap = 0.0f;
 }
 
 // Forza's steering guide, as its own configuration and its players describe it: the bearing
