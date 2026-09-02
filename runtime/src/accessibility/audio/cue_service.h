@@ -23,7 +23,8 @@ inline constexpr float kDefaultFramePeriodSec = 1.0f / 60.0f;
 // family off. Carried over from the MK64 mod, where a curve beep silencing the track-limit tone
 // left the player without edge feedback at exactly the moment it mattered.
 enum class CueChannel {
-    Edge,     // track limits: beeps near the edge, held tone past it
+    Edge,     // track limits: beeps near the edge, a tone on it, held tone past it
+    Surface,  // leaving the road and returning to it
     Curve,    // curve approach, entry, apex and exit beeps
     ItemBox,  // nearest item box proximity blip
     Hazard,   // shells, bananas, obstacles

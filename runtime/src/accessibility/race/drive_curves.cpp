@@ -20,11 +20,9 @@ using audio::CueService;
 using audio::CueSpec;
 using audio::Waveform;
 
-// Lead times, in seconds at the current speed (kSpokenLeadSec for the call, anticipation.h).
+// Lead times, in seconds at the current speed (anticipation.h: the call and the countdown).
 constexpr float kCallLeadSec = kSpokenLeadSec;
-constexpr float kApproachLeadSec[] = {2.5f, 1.4f, 0.7f};
 constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cpp:80
-constexpr int kApproachStages = 3;
 
 // Two corners are chained - "no real straight between them" - when the gap cannot fit the
 // follower's OWN countdown, so it can never be warned separately and has to ride in the leader's
@@ -208,7 +206,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // Scaled with the countdown by construction: the chain window IS "the gap too small to fit the
     // follower's own countdown", so widening the countdown must widen what counts as chained, or
     // corners would start falling into the hole between the two rules.
-    const float chainGap = state.speedPerSecond * kApproachLeadSec[kChainLeadStage];
+    const float chainGap = state.speedPerSecond * kCountdownLeadSec[kChainLeadStage];
     const bool chained = map.IsChainFollower(*upcoming, chainGap);
     // Spoken once: as its own call or inside a predecessor's chained phrase. The ledger also
     // vetoes the countdown - the gap is speed-relative, so a corner merged into a phrase at
@@ -249,15 +247,15 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
     // thing to drive rather than three overlapping warnings.
     const int fromStage = mApproachBeeps;
     const bool countdownDue = !chained && !spokenInChain && !landmarkThisTick &&
-                              fromStage < kApproachStages && toEntry > 0.0f &&
-                              lead <= kApproachLeadSec[fromStage];
+                              fromStage < kCountdownStages && toEntry > 0.0f &&
+                              lead <= kCountdownLeadSec[fromStage];
     if (countdownDue) {
         // A crash or respawn can land the kart already inside every countdown window; playing the
         // whole cascade then crams three beeps into three frames (heard live on kinoko's curve
         // 10). Skip to the furthest stage already reached and play only that one - same rule the
         // entry/apex/exit beeps follow.
         int stage = fromStage;
-        while (stage + 1 < kApproachStages && lead <= kApproachLeadSec[stage + 1]) {
+        while (stage + 1 < kCountdownStages && lead <= kCountdownLeadSec[stage + 1]) {
             ++stage;
         }
         CueService::Instance().PlayOneShot(CueChannel::Curve, ApproachBeep(stage));
@@ -265,7 +263,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         // A cue whose failure is silence gets a diagnostic (the play-test could not tell whether
         // these fired at all). Remove once the beeps are confirmed landing by ear.
         RT_LOGF(RT_TAG_A11Y, "curve countdown %d/%d: curve=%d toEntry=%.0f lead=%.1fs\n",
-                mApproachBeeps, kApproachStages, upcoming->entry, static_cast<double>(toEntry),
+                mApproachBeeps, kCountdownStages, upcoming->entry, static_cast<double>(toEntry),
                 static_cast<double>(lead));
     }
 

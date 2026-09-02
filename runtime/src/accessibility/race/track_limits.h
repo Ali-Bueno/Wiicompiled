@@ -1,6 +1,7 @@
 #ifndef MKW_ACCESSIBILITY_RACE_TRACK_LIMITS_H
 #define MKW_ACCESSIBILITY_RACE_TRACK_LIMITS_H
 
+#include "accessibility/audio/cue_service.h"
 #include "accessibility/race/edge_map.h"
 
 namespace a11y::race {
@@ -22,6 +23,10 @@ inline constexpr float kLimitDebounceSec = kIntervalNearSec;
 // kart is pointing the wrong way. Three separate questions with three separate answers, because
 // they do not always agree: a shortcut can be off-road but perfectly legal, and a kart can be
 // inside the checkpoint pair while sitting on grass.
+//
+// Shaped on Forza's Track Limit cues, in the game's own words: intensity rises with proximity and
+// approach to the edge, per side; the sound changes when the car is right on the edge and about
+// to cross; one sound plays on going off-track and another on returning.
 //
 // One direction language, the player's own: sound sits on the danger side. Approach beeps and
 // the off-road held tone both lean towards the side being left, in the KART's frame - the same
@@ -47,6 +52,14 @@ private:
     bool PannedSideIsRight(bool towardsRight, bool haveOffset, float dtSec);
 
     float mBeepTimer = 0.0f;
+    // Kart yaw rate, radians per guest second, positive toward its right, from the heading of the
+    // velocity over the guest frame and smoothed over a few samples. The edge prediction needs to
+    // know whether the kart is turning: in a bend a straight extrapolation of today's drift misses
+    // the road curving away, which is the margin the player is about to lose.
+    float mYawRate = 0.0f;
+    float mLastForwardX = 0.0f;
+    float mLastForwardZ = 0.0f;
+    bool mHaveLastForward = false;
     // The grade at the last beep. A rate limit, not a ladder: while the grade keeps rising the
     // beeps keep coming at whatever interval the current nearness asks for.
     float mBeepLevel = 0.0f;
@@ -54,12 +67,14 @@ private:
     float mLastMagnitude = 0.0f;
     bool mNearEdge = false;
     bool mHoldingTone = false;
+    // The body is touching the boundary: the on-the-edge tone is sounding.
+    bool mHoldingEdge = false;
     // The debounced surface. Both the held tone and the spoken change are driven off this one
     // value, so a kerb bounce cannot warble the tone or queue a backlog of "off road / on road".
     bool mSurfaceOffRoad = false;
     // How long the surface flag has disagreed with the debounced value above.
     float mSurfaceHoldSec = 0.0f;
-    // What the narration last said, which is a different question from what the surface reads.
+    // What the surface sounds last said, which is a different question from what the surface reads.
     bool mWasOffRoad = false;
     // Wrong way, debounced the same way, plus the countdown to the next re-announcement.
     bool mWasWrongWay = false;
@@ -80,6 +95,10 @@ private:
 
 // Menu preview: plays the held off-road tone as a one-shot, no race state needed.
 void PlayEdgeCueDemo();
+
+// The note that marks leaving the road (`offRoad`) or returning to it, panned to `right` when
+// leaving. Built in track_edges.cpp so it shares the edge family's timbre and pitch constants.
+audio::CueSpec SurfaceChangeCue(bool offRoad, bool right);
 
 }  // namespace a11y::race
 

@@ -17,8 +17,7 @@ namespace {
 //
 // `kTightnessNormal` is the game's own threshold for "this is a corner" - 0.3 rad of heading change
 // between route segments - and the rest are doublings either side of it.
-// kTightnessEnter lives in course_map.h: the line repair needs the same number to guarantee that a
-// correction can never bend the line hard enough to be read as a corner.
+// kTightnessEnter lives in course_map.h, where the map itself reads straights against it.
 constexpr float kTightnessNormal = 0.3f;    // the game's own corner threshold, 17.19 degrees
 constexpr float kTightnessHard = 0.6f;
 constexpr float kTightnessHairpin = 1.0f;

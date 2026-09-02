@@ -19,11 +19,12 @@ enum class EdgeKind : std::uint8_t {
 
 const char* EdgeKindName(EdgeKind kind);
 
-// The share of the real road on one side that has to stay clear before the track-limit cue starts
-// warning about it. Shared, because the line repair below needs exactly the same definition: a
-// route point standing closer to an edge than this is standing inside the cue's own warning band,
-// and the guide must never call a point like that "centred" - the player's spec is that the centre
-// of the pan is the line they can follow calmly.
+// The warning distance, as a share of the course's real half-width: the track-limit cue starts
+// this far from an edge, and the line is placed no closer to a wall or the grass than this, so
+// "on the line" is always just outside the warning and any drift towards the edge is heard at
+// once. One number for both, because the first racing line placed with only the kart's own
+// half-width as clearance put "on the line" and "on the grass" 103 units apart (2026-09-02). A
+// DROP keeps this share of its own local half-width clear as well, whichever is larger.
 inline constexpr float kEdgeOnsetRealFraction = 0.5f;
 
 // The real road at one station, in world units either side of the line. The two sides are valid
@@ -62,8 +63,10 @@ struct StationEdges {
 // Built a couple of stations per tick so it never costs a frame spike, cached for the course, and
 // dropped whenever the course map is (which is also what a line_source change does).
 struct EdgeMap {
-    // Call once per frame with the course map. Does nothing once the course is measured.
-    static void Tick(const CourseMap& map);
+    // Call once per frame with the course map and the player kart's body half-width (0 while no
+    // kart reads: the line waits for it). Does nothing once the course is measured and the line
+    // placed.
+    static void Tick(const CourseMap& map, float kartHalfWidth);
     static void Reset();
 
     // The measured edges at a station, or an invalid entry when that station never read - the
@@ -81,8 +84,8 @@ struct EdgeMap {
 
     static bool Ready();
 
-    // The per-station shift towards the track's right that puts the line back on the asphalt, in
-    // world units and in station order. Empty until the map completes. The course map applies it
+    // The per-station shift towards the track's right that places the racing line inside the real
+    // road, in world units and in station order. Empty until the line is placed. The course map applies it
     // to its own geometry AND to the route it measures the lateral offset against, because those
     // two must stay one line: aiming at one while grading position against the other is the bug
     // that made a player following the guide read as drifting inside every corner.
@@ -103,6 +106,10 @@ struct EdgeMap {
     // length scale anything measured in "track widths" must use: the KMP corridor is the CPU
     // drivers' lane, and on a custom course it can be a small fraction of the asphalt.
     static float MedianHalfWidth();
+
+    // kEdgeOnsetRealFraction of that: the distance from an edge at which the cue starts and inside
+    // which the line is never placed. Zero before the map completes.
+    static float WarningDistance();
 };
 
 }  // namespace a11y::race

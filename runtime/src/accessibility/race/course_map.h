@@ -11,8 +11,7 @@ namespace a11y::race {
 struct Checkpoint;
 
 // Heading change between route segments, in radians, below which the track reads as straight. The
-// curve pass grades corners against it; the line repair is capped by it, so a correction can never
-// bend the line hard enough to invent a corner the course does not have.
+// curve pass grades corners against it.
 inline constexpr float kTightnessEnter = 0.15f;
 
 enum class TurnSeverity { Easy, Normal, Hard, Hairpin };
@@ -56,15 +55,11 @@ public:
 
     int StationCount() const { return static_cast<int>(mPoints.size()); }
 
-    // Moves each station sideways by `shifts[i]` world units towards the track's right, to stand
-    // the line on the asphalt where the course authored it off the road. Only the stations move:
+    // Moves each station sideways by `shifts[i]` world units towards the track's right: the
+    // racing line the edge map placed inside the real road. Only the stations move:
     // RoadOffsetAtArc measures against them too, so the guide's target and the offset's zero are
     // one line by construction - centre pan has to keep meaning "you are on the line", which is
     // the player's own definition of the cue.
-    //
-    // A repair, not a re-authoring: a station the route already put on the road gets a zero shift
-    // and does not move. Smoothed across neighbours first, because a step in the line reads as a
-    // corner to the curvature pass and would have the mod calling turns that are not there.
     //
     // Only on a route-based map, and only once - the caller gates on RoadShifted().
     bool ApplyRoadShift(const std::vector<float>& shifts);

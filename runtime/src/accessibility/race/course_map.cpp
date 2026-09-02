@@ -635,13 +635,8 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     }
     mRoadShifted = true;  // one attempt per course, successful or not
 
-    // Applied exactly as measured. This was a 3-tap average of the neighbouring shifts, because on
-    // 2026-08-31 an undiluted 1,000-unit correction at one station beside an untouched neighbour
-    // added a fourth curve to the map - `entry=4 apex=4 exit=4 right arc=0`, spoken as "gentle
-    // right" where no right turn fits. EdgeMap::CentreLine now bounds the STEP between neighbouring
-    // shifts rather than the shifts themselves, so the profile already arrives continuous and the
-    // average has nothing left to smooth. It does still have something to break: it cut a required
-    // move to a third of itself, and that move is the whole point of the repair.
+    // Applied exactly as solved: the racing line is already the smoothest line its bands allow,
+    // and any averaging here would only bend it back towards the authored route.
     int moved = 0;
     for (int i = 0; i < n; ++i) {
         if (shifts[i] != 0.0f) {
@@ -684,12 +679,10 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     }
     BuildCurves();
 
-    // The repair moves the line WITHIN the road; it must never change what the course is. A repair
-    // that adds a corner has bent the line instead of placing it, and the player is then told to
-    // turn where the track does not - which is exactly what happened on 2026-08-31, when an
-    // uncapped correction produced a zero-length "gentle right" at the shifted station and cost a
-    // whole play-test. The step cap in EdgeMap::CentreLine should make this unreachable;
-    // this is the check that says so out loud rather than trusting the arithmetic.
+    // The placement moves the line WITHIN the road; it must never change what the course is. A
+    // line that adds a corner has bent instead of straightened, and the player is then told to
+    // turn where the track does not - which happened on 2026-08-31 with an uncapped correction.
+    // Least curvature should make this unreachable; this is the check that says so out loud.
     if (mCurves.size() > curvesBefore) {
         const std::size_t curvesAfter = mCurves.size();  // read before the rebuild restores it
         mPoints = before;
@@ -709,10 +702,10 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
         return false;
     }
 
-    // The repair stuck: the edge map rebases its distances onto the line the stations now have.
+    // The placement stuck: the edge map rebases its distances onto the line the stations now have.
     EdgeMap::ConfirmShift(true);
     RT_LOGF(RT_TAG_A11Y,
-            "course map: %d of %d stations were off the road, line repaired, worst shift %.0f, "
+            "course map: racing line placed, %d of %d stations moved, largest %.0f, "
             "lap %.0f\n",
             moved, n, static_cast<double>(worst), static_cast<double>(mLapLength));
     return true;

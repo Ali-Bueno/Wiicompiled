@@ -13,8 +13,8 @@ struct Curve;
 // Describes the track; never drives. Nothing here reads input, writes to the game, or changes what
 // the kart does.
 //
-//  - The steering guide produces one pan value, applied to the game's own engine note: where the
-//    kart is heading relative to the racing line, a reaction time ahead.
+//  - The steering guide produces one pan value, applied to the game's own engine note: the
+//    bearing to an aim point on the racing line a reaction time ahead (Forza's guide).
 //  - The curve call is spoken once per corner per lap, far enough ahead to act on.
 //  - Approach and traversal beeps mark the corner arriving and its entry, apex and exit.
 //
@@ -32,9 +32,9 @@ public:
     // heading for - the side to steer away from.
     float SteeringPan() const { return mSmoothedPan; }
 
-    // Diagnostics for the telemetry line: the predicted offset as a fraction of the real half-width
-    // on that side (signed to the track's right), and how far ahead it was predicted.
-    float LastPredictedFraction() const { return mLastPredictedFraction; }
+    // Diagnostics for the telemetry line: the bearing to the aim point in degrees, positive with
+    // the point on the kart's right, and how far ahead along the line it was taken.
+    float LastBearingDeg() const { return mLastBearingDeg; }
     float LastHorizonUnits() const { return mLastHorizonUnits; }
 
 private:
@@ -43,16 +43,7 @@ private:
     void UpdateCurveCues(const RaceState& state, const CourseMap& map, int station);
 
     float mSmoothedPan = 0.0f;
-    // Kart yaw rate, radians per guest second, positive toward its right. Differentiated from the
-    // heading over the guest frame and smoothed over a few samples.
-    float mYawRate = 0.0f;
-    float mLastForwardX = 0.0f;
-    float mLastForwardZ = 0.0f;
-    bool mHaveLastForward = false;
-    // The side the engine last leaned to, held while the kart faces away from the course and the
-    // prediction has no meaning.
-    float mLastPanSign = 0.0f;
-    float mLastPredictedFraction = 0.0f;
+    float mLastBearingDeg = 0.0f;
     float mLastHorizonUnits = 0.0f;
     int mLastLogBucket = 0;
 

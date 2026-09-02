@@ -150,7 +150,7 @@ void LogStateChange(const RaceState& state) {
 // the course direction agrees with the kart's, where the kart sits across the track, and which way
 // the guide is pointing. Remove once the steering cue is confirmed.
 void LogTelemetry(const RaceState& state, const CourseMap& map, int station, float pan,
-                  float predictedFraction, float horizonUnits) {
+                  float bearingDeg, float horizonUnits) {
     static int countdown = 0;
     if (!state.valid || !state.driving || !map.Loaded()) {
         return;
@@ -186,20 +186,19 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
         realDistance = 0.0f;
     }
 
-    // `pred` is where the guide expects the kart to be across the road at the end of its horizon,
-    // as a fraction of the real half-width and signed to track right - so it is directly comparable
-    // with lateral, and `horizon` says how far ahead that prediction reaches.
+    // `bearing` is the guide's own input: degrees from the kart's heading to its aim point on the
+    // line, positive to the kart's right, and `horizon` how far along the line that point is.
     RT_LOGF(RT_TAG_A11Y,
             "telemetry: cp=%d arc=%.0f kartfwd=(%.2f,%.2f) trackfwd=(%.2f,%.2f) "
             "trackright=(%.2f,%.2f) align=%.2f lat_u=%.0f road=%.0f lateral=%.2f(%d) "
-            "pred=%.2f horizon=%.0f pan=%.2f speed=%.1f\n",
+            "bearing=%+.1f horizon=%.0f pan=%.2f speed=%.1f\n",
             state.checkpoint, static_cast<double>(arc), static_cast<double>(state.forwardX),
             static_cast<double>(state.forwardZ), static_cast<double>(trackX),
             static_cast<double>(trackZ), static_cast<double>(rightX),
             static_cast<double>(rightZ), static_cast<double>(alignment),
             static_cast<double>(lateralUnits), static_cast<double>(realDistance),
             static_cast<double>(lateral), haveLateral ? 1 : 0,
-            static_cast<double>(predictedFraction), static_cast<double>(horizonUnits),
+            static_cast<double>(bearingDeg), static_cast<double>(horizonUnits),
             static_cast<double>(pan), static_cast<double>(state.speed));
 }
 
@@ -279,13 +278,14 @@ void Tick() {
         }
     }
 
-    // The real road edges, measured a couple of stations per tick until the course is covered.
-    EdgeMap::Tick(g_map);
-
     const float stepSec = StepSeconds();
     RaceState& state = ReadRaceState();
     state.speedPerSecond = state.speed * GuestFramesPerSecond();
     state.frameSec = 1.0f / GuestFramesPerSecond();
+
+    // The real road edges, measured a couple of stations per tick until the course is covered,
+    // then the racing line placed inside them around the kart's own size.
+    EdgeMap::Tick(g_map, state.valid ? state.bodyHalfWidth : 0.0f);
     // Behind the pause menu the game advances no time, so neither may any cue timer.
     const float dtSec = state.paused ? 0.0f : stepSec;
     // The cue renderer works in whole guest frames too, and takes their duration from here rather
@@ -304,9 +304,7 @@ void Tick() {
     g_prevValid = state.valid;
     g_prevFinished = state.finished;
 
-    // Once the edges are known the line is stood back on the asphalt wherever the course authored
-    // it off the road - the item route follows what shells fly over, not what a kart can drive.
-    // Deferred to a moment where moving the line under the kart cannot teleport the guide: the kart
+    // Once the edges are known the line becomes the racing line inside them (EdgeMap). Deferred to a moment where moving the line under the kart cannot teleport the guide: the kart
     // not driving, or a lap boundary, whichever comes first.
     const bool lapChanged = g_lastShiftLap >= 0 && state.lap != g_lastShiftLap;
     g_lastShiftLap = state.lap;
@@ -338,7 +336,7 @@ void Tick() {
     g_kartVolume.Tick(state);
     g_rouletteVolume.Tick(state);
     LogTelemetry(state, g_map, station, g_driveAssist.SteeringPan(),
-                 g_driveAssist.LastPredictedFraction(), g_driveAssist.LastHorizonUnits());
+                 g_driveAssist.LastBearingDeg(), g_driveAssist.LastHorizonUnits());
     g_trackLimits.Tick(state, g_map, g_handedness, station, dtSec);
     g_itemBeacon.Tick(state, g_map, g_handedness, station, dtSec);
 

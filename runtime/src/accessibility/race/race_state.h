@@ -52,6 +52,9 @@ struct RaceState {
     float completion = 0.0f;
 
     std::uint32_t floorFlags = 0;
+    // Half the kart body's width across its hitboxes, world units at scale 1: how close to an
+    // edge the kart's centre can pass without touching it. Zero when it did not read.
+    float bodyHalfWidth = 0.0f;
     // Whether at least one wheel is touching a floor collider this frame. `offRoad` below only
     // updates while this is true - Kart::Movement::UpdateOffroad skips writing the surface
     // multiplier entirely while airborne, so a surface-based cue must gate on this too.

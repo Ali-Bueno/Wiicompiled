@@ -1,5 +1,6 @@
 #include "accessibility/race/race_state.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "accessibility/race/guest_read.h"
@@ -32,6 +33,18 @@ constexpr std::uint32_t kBodyPhysicsHolder = 0x90;  // Kart::Link::GetPhysicsHol
 constexpr std::uint32_t kHolderPhysics = 0x04;      // Kart::Link::GetPhysics (0x805903CC)
 constexpr std::uint32_t kHolderHitboxGroup = 0x08;  // body hitbox group
 constexpr std::uint32_t kHitboxKclFlags = 0x74;     // Kart::Link::GetBodyClosestFloorFlags
+// HitboxGroup, from HitboxGroup::UpdateBoundingRadius (0x805B883C): the hitbox count at +0 and
+// the Hitbox array at +0x8C, each 0x30 bytes holding its BSP::Hitbox* at +0. The BSP hitbox has
+// `enable` at +0, position at +4 and radius at +0x10 (HitboxGroup::__ct(hitboxes), 0x805B84C0).
+// The group's own +4 is the bounding radius over ALL axes - a kart's half-length - so the
+// x-axis pass is repeated here for the width alone.
+constexpr std::uint32_t kHitboxGroupCount = 0x00;    // s16
+constexpr std::uint32_t kHitboxGroupHitboxes = 0x8C; // Hitbox*
+constexpr std::uint32_t kHitboxStride = 0x30;
+constexpr std::uint32_t kHitboxBsp = 0x00;           // BSP::Hitbox*
+constexpr std::uint32_t kBspHitboxEnable = 0x00;     // u16
+constexpr std::uint32_t kBspHitboxPositionX = 0x04;  // Vec3 x
+constexpr std::uint32_t kBspHitboxRadius = 0x10;
 constexpr std::uint32_t kHolderBodyMatrix = 0x9C;   // Kart::Link::GetMtx (0x80590264), Mtx34
 
 constexpr std::uint32_t kPhysicsPosition = 0x68;  // Kart::Link::SetKartPosition (0x80590238)
@@ -138,6 +151,37 @@ bool ReadHeading(std::uint32_t movement, std::uint32_t holder, float speed, floa
     return true;
 }
 
+// The x extent of the body's hitbox spheres, the same pass UpdateBoundingRadius makes per axis.
+// Fixed for the race, so it is only walked once per kart.
+float ReadBodyHalfWidth(std::uint32_t hitboxGroup) {
+    static std::uint32_t s_group = 0;
+    static float s_halfWidth = 0.0f;
+    if (hitboxGroup == s_group && s_halfWidth > 0.0f) {
+        return s_halfWidth;
+    }
+    std::uint16_t count = 0;
+    std::uint32_t hitboxes = 0;
+    if (!TryU16(hitboxGroup + kHitboxGroupCount, /*highHalf=*/true, count) ||
+        !TryPointer(hitboxGroup + kHitboxGroupHitboxes, hitboxes)) {
+        return 0.0f;
+    }
+    float halfWidth = 0.0f;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uint32_t bsp = 0;
+        std::uint16_t enabled = 0;
+        float x = 0.0f, radius = 0.0f;
+        if (!TryPointer(hitboxes + i * kHitboxStride + kHitboxBsp, bsp) ||
+            !TryU16(bsp + kBspHitboxEnable, /*highHalf=*/true, enabled) || enabled == 0 ||
+            !TryFloat(bsp + kBspHitboxPositionX, x) || !TryFloat(bsp + kBspHitboxRadius, radius)) {
+            continue;
+        }
+        halfWidth = std::max(halfWidth, radius + std::fabs(x));
+    }
+    s_group = hitboxGroup;
+    s_halfWidth = halfWidth;
+    return halfWidth;
+}
+
 }  // namespace
 
 int ReadKartObjects(std::uint32_t* out, int maxCount) {
@@ -220,6 +264,7 @@ RaceState& ReadRaceState() {
     std::uint32_t hitboxGroup = 0;
     if (TryPointer(holder + kHolderHitboxGroup, hitboxGroup)) {
         Memory::TryRead32(hitboxGroup + kHitboxKclFlags, g_state.floorFlags);
+        g_state.bodyHalfWidth = ReadBodyHalfWidth(hitboxGroup);
     }
 
     g_state.valid = true;

@@ -29,10 +29,15 @@ constexpr float kWrongWayRepeatSec = kSpokenLeadSec;
 
 void TrackLimits::Reset() {
     mBeepTimer = 0.0f;
+    mYawRate = 0.0f;
+    mLastForwardX = 0.0f;
+    mLastForwardZ = 0.0f;
+    mHaveLastForward = false;
     mBeepLevel = 0.0f;
     mLastMagnitude = 0.0f;
     mNearEdge = false;
     mHoldingTone = false;
+    mHoldingEdge = false;
     mSurfaceOffRoad = false;
     mSurfaceHoldSec = 0.0f;
     mWasOffRoad = false;
@@ -88,7 +93,13 @@ bool TrackLimits::PannedSideIsRight(bool towardsRight, bool haveOffset, float dt
 }
 
 // Driven off the DEBOUNCED surface, not the raw flag: the raw one flickers several times a second
-// on a kerb, and every flicker used to queue another "off road" / "on road" behind the last.
+// on a kerb, and every flicker used to queue another sound behind the last.
+//
+// A sound each way, as Forza does it, instead of the spoken "off road" / "on road" this used to
+// be: a word arrives late and sits in the speech queue behind a corner call, and the surface is
+// something the player needs the instant it changes. Leaving drops to the beeps' lowest note,
+// returning rises to their highest, on the family's own timbre; a drop keeps its saw and its
+// octave. Its own channel, so the held tone that follows cannot cut it off.
 void TrackLimits::UpdateSurface(bool offRoad) {
     if (offRoad == mWasOffRoad) {
         return;
@@ -97,14 +108,7 @@ void TrackLimits::UpdateSurface(bool offRoad) {
     // Temporary, same reason as the edge logs.
     RT_LOGF(RT_TAG_A11Y, "surface: %s (edge kind %s)\n", offRoad ? "off_road" : "on_road",
             EdgeKindName(mNearEdgeKind));
-    // Spoken on the transition only. Leaving the road where the measured edge on that side is a
-    // drop is a different sentence from sliding onto grass - the kind comes from the edge cue's
-    // own last look, so it is only known while edge cues are on.
-    const char* key = "on_road";
-    if (offRoad) {
-        key = mNearEdgeKind == EdgeKind::Fall ? "off_road_fall" : "off_road";
-    }
-    ScreenReader::Instance().Speak(loc::Get(key), /*interrupt=*/false);
+    CueService::Instance().PlayOneShot(CueChannel::Surface, SurfaceChangeCue(offRoad, mSideRight));
 }
 
 // Debounced like the surface, and re-announced while it holds: wrong way is a state the player can
@@ -136,6 +140,7 @@ void TrackLimits::UpdateWrongWay(bool wrongWay, float dtSec) {
 void TrackLimits::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,
                        int station, float dtSec) {
     if (!state.valid || !state.driving) {
+        mHaveLastForward = false;
         if (mHoldingTone) {
             CueService::Instance().Stop(CueChannel::Edge);
             mHoldingTone = false;

@@ -23,6 +23,10 @@ inline constexpr float kAnticipationFarSec = 0.79f;
 // reminders repeat on the same gap.
 inline constexpr float kSpokenLeadSec = 4.0f;
 
+// The corner countdown: one beep at each of these leads, seconds at the current speed.
+inline constexpr float kCountdownLeadSec[] = {2.5f, 1.4f, 0.7f};
+inline constexpr int kCountdownStages = 3;
+
 inline float AnticipationSeconds() {
     const float knob =
         std::clamp(static_cast<float>(RuntimeConfigFile::AccessibilitySteeringLookAhead()), 0.0f,

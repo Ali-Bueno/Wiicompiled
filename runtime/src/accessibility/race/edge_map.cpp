@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <limits>
 #include <vector>
 
 #include "accessibility/a11y_log.h"
@@ -12,6 +11,7 @@
 #include "accessibility/race/kcl_objects.h"
 #include "accessibility/race/kcl_road.h"
 #include "accessibility/race/race_manager.h"
+#include "accessibility/race/racing_line.h"
 
 namespace a11y::race {
 namespace {
@@ -30,10 +30,12 @@ constexpr int kEdgeMapSettleFrames = kCourseSettleFrames;
 // march cannot resolve anything finer than its own step.
 constexpr float kEdgeMapMinDistance = kKclLateralStepUnits;
 
-enum class EdgeMapState { Idle, Running, Done };
+enum class EdgeMapState { Idle, Running, Solving, Done };
 
 EdgeMapState g_edgeMapState = EdgeMapState::Idle;
 std::vector<StationEdges> g_edges;
+// Places the line once the sweep is complete, one iteration per tick.
+RacingLine g_line;
 int g_cursor = 0;
 int g_frames = 0;
 int g_bothEdges = 0;
@@ -44,8 +46,7 @@ float g_medianHalfWidth = 0.0f;
 // Per station, towards the track's right: what it took to stand the line on asphalt. Mostly zero.
 std::vector<float> g_shifts;
 int g_shiftedStations = 0;
-// Stations where the safe band and the step limit could not both be honoured - the road moves
-// sideways faster than the line is allowed to follow. Zero on every course measured so far.
+// Stations whose road is narrower than the kart's clearance on both sides together.
 int g_tightStations = 0;
 // Whether the course map has already said what it did with the shifts. Until it has, every measured
 // distance reads from the authored stations, which is where the map still has them.
@@ -123,17 +124,15 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     if (!edges.valid) {
         return false;
     }
-    // Stated from the station the course AUTHORED, not from wherever the sweep stood. The probe
-    // offset used to be handed to CentreLine as a finished move and added to its answer afterwards,
-    // which put the whole of it outside the step cap; folding it into the distances instead makes
-    // the solver's own answer the TOTAL move and puts all of it under the cap. A side the authored
-    // point already stands outside reads negative here, which is the truth about that point.
+    // Stated from the station the course AUTHORED, not from wherever the sweep stood, so the
+    // line placement's answer is the TOTAL move. A side the authored point already stands outside
+    // reads negative here, which is the truth about that point.
     out.leftKind = edges.left.valid ? ClassifyEdge(edges.left) : EdgeKind::Unknown;
     out.rightKind = edges.right.valid ? ClassifyEdge(edges.right) : EdgeKind::Unknown;
     out.leftDistance = edges.left.valid ? edges.left.distance - probeShift : 0.0f;
     out.rightDistance = edges.right.valid ? edges.right.distance + probeShift : 0.0f;
-    // Centring is deliberately NOT done here: it needs the neighbouring stations, which are not
-    // measured yet. See CentreLine below, which owns `shift` outright.
+    // Placement is deliberately NOT done here: it needs every station. See BuildBands below and
+    // RacingLine, which own `shift` outright.
     out.shift = 0.0f;
     // Each side stands on its own: a line point hard against one boundary still measured the other
     // correctly, and that is the side the player is about to need.
@@ -142,170 +141,41 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     return out.leftValid && out.rightValid;
 }
 
-// The line repair's second pass, run once every station has been swept.
+// The line's placement, decided once every station has been swept.
 //
-// A route point that stands hard against one edge is a point in the wrong place, and the guide must
-// not call it "centred": the player's spec is that the centre of the pan is the line they can drive
-// without hitting anything, on any track, in a corner as much as on a straight. Measured on the
-// course they reported, at the entry to its first corner, the line jogs ~1,000 units sideways and
-// stands 150 units from the right-hand edge while the total road there is 2,300 - the same as at
-// its neighbours. The road does not pinch; the line does. Obeying a centred pan into a left-hander
-// from there carries the kart straight off.
-//
-// This does not re-author the racing line. It is the SMALLEST move that puts every station inside
-// its own safe band, and a station already safe does not move at all - which matters, because a
-// wholesale KCL-recentred line lost to the authored one on 7 of 8 offline courses
-// (route_graph.cpp). Three derived quantities and no tunables:
-//
-//   band  Where the track-limit cue is silent: kEdgeOnsetRealFraction of the local half-width clear
-//         on each side, and never less than one march step, which is the hard "not on the edge"
-//         floor. The same constant, so "centred" and "not warning" are one statement. Only a side
-//         with a real EDGE states a bound: an Open side ran out of sweep with road still under it,
-//         so it knows neither where the road ends nor how wide it is, and counting its cap distance
-//         as a measurement inflated the half-width and pushed the line towards unresolved ground.
-//   free  An apron or a junction measures a wide open space that is not a lane, and centring
-//         station 5 of that course by 1,150 units put the player off a bridge approach while they
-//         sat exactly on the line. An apron is a LOCAL MAXIMUM of road width, which takes no
-//         constant to recognise - compared against the nearest stations that measured a width at
-//         all, since an unmeasured neighbour reads as zero and would make its neighbours trivial
-//         maxima. Those stations demand no move; they still refuse one that would put them on an
-//         edge they did measure.
-//   step  A lateral step d across a segment of length s turns the line by about 2*atan(d/s), and
-//         the curve pass reads anything below kTightnessEnter as straight, so a step under
-//         s*tan(kTightnessEnter/2) can never be graded as a corner. Per SEGMENT, because the curve
-//         pass grades each station against its own span rather than the lap mean. The first version
-//         put this cap on the shift ITSELF, which limited how FAR the repair could reach instead of
-//         how FAST: a lone station could not take its neighbours with it, so that corner entry
-//         ended at 450 units of margin rather than clear of the band. Bounding the step lets a
-//         whole stretch slide as one.
-//
-// The bands are propagated around the loop until they stop changing, which folds the step limit
-// into them. After that each station's answer is just the point of its band nearest to not moving
-// at all, and that pick is automatically within one step of its neighbours' because clamping is
-// 1-Lipschitz in the bounds it clamps to - so the shape of the course is preserved by construction
-// rather than by dilution. Every bound therefore has to be in place BEFORE propagation: a clamp
-// applied to the answers afterwards silently breaks that guarantee. A band that propagation empties
-// is a place where the road moves sideways faster than the line may follow: those take the
-// midpoint, are counted, and ApplyRoadShift's corner check stays as the backstop.
-//
-// The answer is the whole move from the authored station, applied once by CourseMap::ApplyRoadShift
-// and reflected back into the measured distances only if that succeeds (EdgeMap::ConfirmShift).
-void CentreLine(const CourseMap& map) {
+// Each station gets a band it may stand in - the road on each side less a clearance - and the
+// racing line is the line of least curvature through those bands (RacingLine). The clearance
+// against a wall or the grass is the track-limit cue's own warning distance (never less than the
+// kart's body), so the line runs as close to the limit as the player can be warned about - the
+// player's spec, 2026-09-02, is Forza's: the line follows the best route even when that is near
+// the limit. Placed at the kart's bare half-width it put "on the line" 103 units from the grass
+// and the player off the road on a corner called gentle. A drop keeps the same share of its own
+// local half-width clear as well. Only a side with a real edge bounds the band; an Unknown side
+// pins the station where the course authored it, since nothing is known about the road there.
+std::vector<LineBand> BuildBands(float kartHalfWidth) {
     const int count = static_cast<int>(g_edges.size());
+    std::vector<LineBand> bands(static_cast<std::size_t>(count));
     g_tightStations = 0;
-    if (count < 3) {
-        return;
-    }
-    constexpr float kFree = std::numeric_limits<float>::infinity();
-
-    // maxStep[i] bounds |shift(i) - shift(i-1)|, from the length of the segment between them.
-    const float slope = std::tan(kTightnessEnter * 0.5f);
-    std::vector<float> maxStep(static_cast<std::size_t>(count), 0.0f);
-    for (int i = 0; i < count; ++i) {
-        maxStep[static_cast<std::size_t>(i)] = map.ArcForward(i - 1, i) * slope;
-    }
-
-    // An Open side is a cap, not an edge, so it neither says how wide the road is nor where the
-    // line may sit.
-    auto bounded = [](const StationEdges& e, bool right) {
-        const EdgeKind kind = e.Kind(right);
-        return kind != EdgeKind::Unknown && kind != EdgeKind::Open;
-    };
-
-    // Every decision reads the road as SWEPT, so a station already moved cannot change what its
-    // neighbour thinks the road there is. Zero means "no width measured here", never "no road".
-    std::vector<float> halfWidth(static_cast<std::size_t>(count), 0.0f);
     for (int i = 0; i < count; ++i) {
         const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
-        const bool haveLeft = bounded(e, false);
-        const bool haveRight = bounded(e, true);
-        float width = 0.0f;
-        if (haveLeft && haveRight) {
-            width = (e.leftDistance + e.rightDistance) * 0.5f;  // the road's own half-width
-        } else if (haveLeft) {
-            width = e.leftDistance;  // one edge is all this station can say about its road
-        } else if (haveRight) {
-            width = e.rightDistance;
+        LineBand& band = bands[static_cast<std::size_t>(i)];
+        if (e.leftKind == EdgeKind::Unknown || e.rightKind == EdgeKind::Unknown) {
+            continue;  // lo = hi = 0: stays where authored
         }
-        halfWidth[static_cast<std::size_t>(i)] = width > 0.0f ? width : 0.0f;
-    }
-
-    // The nearest station either way that measured a width at all, so an unread stretch is stepped
-    // over rather than counted as a road of width zero.
-    auto measuredNeighbour = [&](int from, int step) {
-        for (int k = 1; k < count; ++k) {
-            const int at = ((from + step * k) % count + count) % count;
-            const float w = halfWidth[static_cast<std::size_t>(at)];
-            if (w > 0.0f) {
-                return w;
-            }
-        }
-        return 0.0f;
-    };
-
-    std::vector<float> lo(static_cast<std::size_t>(count), -kFree);
-    std::vector<float> hi(static_cast<std::size_t>(count), kFree);
-    for (int i = 0; i < count; ++i) {
-        const StationEdges& e = g_edges[static_cast<std::size_t>(i)];
-        const float here = halfWidth[static_cast<std::size_t>(i)];
-        const float prev = measuredNeighbour(i, -1);
-        const float next = measuredNeighbour(i, +1);
-        const bool apron = here > 0.0f && prev > 0.0f && next > 0.0f && here > prev && here > next;
-        // A free station keeps only the hard floor; a constrained one also keeps the cue's own
-        // silent band clear.
-        const float clear = (apron || !(here > 0.0f))
-                                ? kEdgeMapMinDistance
-                                : std::max(kEdgeOnsetRealFraction * here, kEdgeMapMinDistance);
-        if (bounded(e, false)) {
-            lo[static_cast<std::size_t>(i)] = -e.leftDistance + clear;
-        }
-        if (bounded(e, true)) {
-            hi[static_cast<std::size_t>(i)] = e.rightDistance - clear;
-        }
-    }
-
-    // Both chains are monotone - lo only rises, hi only falls - and bounded by the widest band, so
-    // this converges; a lap that changes nothing is the fixed point. Forward and backward both run
-    // in every pass, because it takes both to make neighbouring bounds differ by at most one step,
-    // which is what the pick below relies on.
-    for (int pass = 0; pass < count; ++pass) {
-        bool changed = false;
-        for (int i = 0; i < count; ++i) {
-            const std::size_t here = static_cast<std::size_t>(i);
-            const std::size_t back = static_cast<std::size_t>((i + count - 1) % count);
-            const float step = maxStep[here];
-            if (lo[back] - step > lo[here]) { lo[here] = lo[back] - step; changed = true; }
-            if (hi[back] + step < hi[here]) { hi[here] = hi[back] + step; changed = true; }
-        }
-        for (int i = count - 1; i >= 0; --i) {
-            const std::size_t here = static_cast<std::size_t>(i);
-            const std::size_t ahead = static_cast<std::size_t>((i + 1) % count);
-            const float step = maxStep[ahead];
-            if (lo[ahead] - step > lo[here]) { lo[here] = lo[ahead] - step; changed = true; }
-            if (hi[ahead] + step < hi[here]) { hi[here] = hi[ahead] + step; changed = true; }
-        }
-        if (!changed) {
-            break;
-        }
-    }
-
-    for (int i = 0; i < count; ++i) {
-        const float low = lo[static_cast<std::size_t>(i)];
-        const float high = hi[static_cast<std::size_t>(i)];
-        float shift = 0.0f;
-        if (low > high) {
-            shift = (low + high) * 0.5f;  // both ends finite: only a two-sided band can empty
+        const float half = (e.leftDistance + e.rightDistance) * 0.5f;
+        auto clearance = [&](EdgeKind kind) {
+            const float warned =
+                std::max({EdgeMap::WarningDistance(), kartHalfWidth, kEdgeMapMinDistance});
+            return kind == EdgeKind::Fall ? std::max(kEdgeOnsetRealFraction * half, warned)
+                                          : warned;
+        };
+        band.lo = -e.leftDistance + clearance(e.leftKind);
+        band.hi = e.rightDistance - clearance(e.rightKind);
+        if (band.lo > band.hi) {
             ++g_tightStations;
-        } else {
-            shift = std::max(low, std::min(high, 0.0f));
         }
-        if (!std::isfinite(shift)) {
-            continue;  // no bound at all on this station: leave it exactly where it was authored
-        }
-        // Recorded even where the sides did not read: the shift is what keeps the line continuous,
-        // and a free station dropping its ramp back to zero is the step the cap exists to prevent.
-        g_edges[static_cast<std::size_t>(i)].shift = shift;
     }
+    return bands;
 }
 
 // Gathered once the sweep is complete, in station order, for the course map to apply.
@@ -368,9 +238,8 @@ void LogSummary(const CourseMap& map) {
         if (e.leftValid && e.rightValid) {
             offsets.push_back(std::fabs((right - left) * 0.5f));
         }
-        // The player's spec, counted directly: after the repair, how many line points still stand
-        // closer to an edge than the track-limit cue's own onset. Anything but zero is a place
-        // where a centred pan does not mean a place the kart fits.
+        // How many line points stand inside the track-limit cue's onset band: where the racing
+        // line hugs a limit, and the edge cue speaks the moment the kart drifts off it.
         if (left > 0.0f && right > 0.0f) {
             const float half = (left + right) * 0.5f;
             if (std::min(left, right) < kEdgeOnsetRealFraction * half) {
@@ -384,8 +253,8 @@ void LogSummary(const CourseMap& map) {
         medianOffset = offsets[offsets.size() / 2];
     }
     RT_LOGF(RT_TAG_A11Y,
-            "edge centring: median off-centre %.0f of half-width %.0f (%d%%), %d stations still "
-            "inside the warning band, %d too tight to place, %d off road the repair could not "
+            "edge centring: median off-centre %.0f of half-width %.0f (%d%%), %d stations hugging "
+            "a limit, %d narrower than the kart, %d off road the repair could not "
             "reach, kmp median half-width %.0f\n",
             static_cast<double>(medianOffset), static_cast<double>(g_medianHalfWidth),
             g_medianHalfWidth > 0.0f ? static_cast<int>(medianOffset * 100.0f / g_medianHalfWidth) : 0,
@@ -452,6 +321,8 @@ bool EdgeMap::Ready() { return g_edgeMapState == EdgeMapState::Done && !g_edges.
 
 float EdgeMap::MedianHalfWidth() { return g_medianHalfWidth; }
 
+float EdgeMap::WarningDistance() { return kEdgeOnsetRealFraction * g_medianHalfWidth; }
+
 const std::vector<float>& EdgeMap::Shifts() { return g_shifts; }
 
 void EdgeMap::ConfirmShift(bool applied) {
@@ -504,8 +375,34 @@ bool EdgeMap::SideAtArc(const CourseMap& map, float arc, bool right, float& dist
     return distance > 0.0f;
 }
 
-void EdgeMap::Tick(const CourseMap& map) {
+void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth) {
     if (g_edgeMapState == EdgeMapState::Done) {
+        return;
+    }
+    if (g_edgeMapState == EdgeMapState::Solving) {
+        if (static_cast<int>(g_edges.size()) != map.StationCount()) {
+            Reset();
+            return;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        const bool placed = g_line.Step();
+        g_worstTickMs = std::max(
+            g_worstTickMs,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+                .count());
+        if (!placed) {
+            return;
+        }
+        const std::vector<float>& shifts = g_line.Shifts();
+        for (std::size_t i = 0; i < g_edges.size() && i < shifts.size(); ++i) {
+            g_edges[i].shift = shifts[i];
+        }
+        g_edgeMapState = EdgeMapState::Done;
+        CollectShifts();
+        MeasureMedianHalfWidth();
+        RT_LOGF(RT_TAG_A11Y, "edge map: line placed in %d iterations, %d stations on a limit\n",
+                g_line.Iterations(), g_line.Pinned());
+        LogSummary(map);
         return;
     }
     // The heights come from the route points, so the checkpoint fallback has none to probe from.
@@ -567,11 +464,18 @@ void EdgeMap::Tick(const CourseMap& map) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
             .count());
     if (g_cursor >= map.StationCount()) {
-        g_edgeMapState = EdgeMapState::Done;
-        CentreLine(map);
-        CollectShifts();
-        MeasureMedianHalfWidth();
-        LogSummary(map);
+        // The bands need the kart's size, which reads only while a kart exists; until then the
+        // sweep stays complete and waits.
+        if (!(kartHalfWidth > 0.0f)) {
+            return;
+        }
+        g_edgeMapState = EdgeMapState::Solving;
+        MeasureMedianHalfWidth();  // the bands need the warning distance, which needs the scale
+        // Settled once no station wants to move by a probe step: the edges themselves are not
+        // known any finer than that.
+        g_line.Begin(map, BuildBands(kartHalfWidth), kKclLateralStepUnits);
+        RT_LOGF(RT_TAG_A11Y, "edge map: placing the line, kart half-width %.0f\n",
+                static_cast<double>(kartHalfWidth));
     }
 }
 
