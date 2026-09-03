@@ -24,9 +24,9 @@ using audio::Waveform;
 constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cpp:80
 
 // A run of corners is one thing to drive (the player's spec, 2026-08-28 and 2026-09-03): the
-// phrase names the run, the countdown sounds before its FIRST corner only, every corner keeps
-// its entry/apex/exit beeps, and nothing more is spoken until the kart is out of the last corner
-// named. Which corners chain is the course's own (Curve::follower). At most this many corners
+// phrase names the run, every corner keeps its entry/apex/exit beeps and the countdown stages
+// its own straight has room for, and nothing more is spoken until the kart is out of the last
+// corner named. Which corners chain is the course's own (Curve::follower). At most this many corners
 // share one phrase; a longer run gets its next phrase on leaving the last one named. Two, as
 // Forza's Turn Navigation does ("right 2 into right 3", never three; player's decision
 // 2026-09-03, docs/forza-blind-driving-assist.md 4b).
@@ -42,14 +42,14 @@ constexpr Waveform kApproachShape = Waveform::Sine;
 constexpr float kApproachHz = 700.0f;   // MK64 AudioCueService.cpp:166
 constexpr float kApproachSec = 0.081f;  // MK64's 2600 samples at 32 kHz
 
-// Traversal: hollow square, lower register; entry, apex and exit share a pitch, and only the exit
-// of the LAST corner of a run rises - as Forza's gate cues do, so a level exit beep itself says
-// another corner follows (player's decision 2026-09-03, docs/forza-blind-driving-assist.md 4b).
+// Traversal: hollow square, lower register; entry and apex share a pitch, the exit rises on EVERY
+// corner (MK64 DriveAssist.cpp:90-93). Forza raises only the last exit of a run; tried on
+// 2026-09-03 and rejected by the player - a level exit did not read as an exit at all.
 constexpr Waveform kCurveShape = Waveform::Square;
 constexpr float kCurveHz = 440.0f;   // MK64 AudioCueService.cpp:167
 constexpr float kCurveSec = 0.094f;  // MK64's 3000 samples at 32 kHz
 constexpr float kLandmarkPitch = 1.0f;
-constexpr float kRunEndPitch = 1.5f;  // MK64 DriveAssist.cpp:90-93's exit pitch
+constexpr float kExitPitch = 1.5f;
 constexpr int kExitPhase = 3;
 // Beeps lean towards the OUTSIDE of the corner - the side being drifted into, the one to steer
 // away from - the same direction language as the engine pan and the edge cue.
@@ -176,7 +176,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
             nextToEntry = toEntry;
         }
     }
-    // A corner entered before it could be named - the fourth of a run with no gap between its
+    // A corner entered before it could be named - the third of a run with no gap between its
     // corners - is named at its entry: still the corner being entered, never one beyond it.
     if (inside != nullptr && !mCues[static_cast<std::size_t>(inside - curves.data())].called) {
         nextIndex = static_cast<std::size_t>(inside - curves.data());
@@ -270,12 +270,8 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
             if (reached >= 1 && reached < 3 && since >= c.length) {
                 reached = 3;
             }
-            // The run ends here when the next corner does not chain to this one.
-            const Curve* after = map.CurveAfter(c);
-            const bool endsRun = after == nullptr || after == &c || !after->follower;
             for (int phase = cue.phase + 1; phase <= reached; ++phase) {
-                mPendingLandmarks.push_back(phase == kExitPhase && endsRun ? kRunEndPitch
-                                                                            : kLandmarkPitch);
+                mPendingLandmarks.push_back(phase == kExitPhase ? kExitPitch : kLandmarkPitch);
                 mPendingRight.push_back(c.right);
                 RT_LOGF(RT_TAG_A11Y,
                         "curve beep phase=%d (1 entry, 2 apex, 3 exit): curve=%d arc=%.0f\n",
