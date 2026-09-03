@@ -12,15 +12,16 @@ struct Checkpoint;
 
 enum class TurnSeverity { Easy, Normal, Hard, Hairpin };
 
-// A stretch of the line bending one way. Landmarks are continuous arc positions along the lap,
-// never station indices: the stations are a sampling grid, the corner is a place.
+// A stretch of the line bending one way, as the game's own CPU defines one: a run of authored
+// route vertices whose turn angles say the drivers drift through it.
 struct Curve {
-    // The stations the bend spans, inclusive; the corner's identity, which survives the line
-    // being moved sideways. `entry`/`length` are derived from them on the CURRENT line.
-    int first = 0;
-    int last = 0;
-    float entry = 0.0f;   // arc where the bend begins, in [0, LapLength())
-    float length = 0.0f;  // arc from entry to exit, always positive
+    int firstVertex = 0, lastVertex = 0;  // authored lap vertices spanned; the corner's identity
+    // Landmarks as fractional station coordinates (station + t along its segment), so they
+    // survive the racing line moving the stations sideways (RefreshCurveArcs re-reads them).
+    float entryPos = 0.0f, apexPos = 0.0f, exitPos = 0.0f;
+    // The same three places as arcs on the CURRENT line, in [0, LapLength()); length is always
+    // positive.
+    float entry = 0.0f, apex = 0.0f, length = 0.0f;
     bool right = false;
     TurnSeverity severity = TurnSeverity::Easy;
     bool isLong = false;
@@ -28,8 +29,10 @@ struct Curve {
     // (anticipation.h kStraightUnits). A follower is named in its run's phrase and never counts
     // down. A course property, so it is settled here.
     bool follower = false;
-    float peakCurvature = 0.0f;  // rad per unit, unsigned
     float totalDegrees = 0.0f;
+    float radius = 0.0f;      // the road radius the grade was taken from
+    bool driftPoint = false;  // a vertex reaches the game's own corner threshold: the CPU drifts
+    bool forced = false;      // an ENPT force-drift point lies in the run
 };
 
 // The driving line and the track limits.
@@ -160,10 +163,6 @@ public:
     // convention with nothing observed while driving.
     float RightPerpSign() const { return mRightPerpSign; }
 
-    // Signed curvature of the line at a station, positive to the right, rad per unit of travel,
-    // smoothed over one road width. Zero until the map is built.
-    float CurvatureAt(int i) const;
-
     // ---- Corners -------------------------------------------------------------------------------
     //
     // Corner shape and run membership are geometry alone: fixed radii and fixed distances, the
@@ -173,7 +172,7 @@ public:
     unsigned CurveGeneration() const { return mCurveGeneration; }
 
     const std::vector<Curve>& Curves() const { return mCurves; }
-    float CurveApex(const Curve& c) const { return WrapForward(c.entry + c.length * 0.5f); }
+    float CurveApex(const Curve& c) const { return c.apex; }
     float CurveExit(const Curve& c) const { return WrapForward(c.entry + c.length); }
     // The corner whose span contains this arc, or nullptr on a straight.
     const Curve* CurveContaining(float arc) const;
@@ -205,22 +204,26 @@ private:
     void BuildCheckpointStations(const std::vector<Checkpoint>& checkpoints);
     void BuildDerived();
     void BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints);
-    // Curvature per station, then the corners (course_curves.cpp). Both read the ROAD - the
-    // authored route - never the racing line: the line crosses the road between corners and
-    // that S is a real bend of the line but not a corner of the course.
-    void BuildCurvature();
+    // The corners (course_curves.cpp). They read the AUTHORED route vertices, never the racing
+    // line and never the smoothed one: the game's own corner is a turn angle at those vertices,
+    // and the line crosses the road between corners in an S that is no corner of the course.
     void BuildCurves();
     // Re-derives each corner's arc landmarks from the current stations (after a road shift).
     void RefreshCurveArcs();
-    float SignedTurnAt(int i) const;
     // Temporary diagnostic dump of the segmentation result.
     void LogCurveMap() const;
 
     RouteGraph mGraph;
     std::vector<Station> mPoints;
     std::vector<float> mArc;
-    std::vector<float> mCurvature;  // signed, positive to the right, rad per unit, smoothed
-    std::vector<float> mRawTurn;    // signed heading change at each station, radians
+    // The authored route the stations were resampled from: which route points the lap walked, and
+    // where each one sits along the polyline they form. Empty on the checkpoint fallback, which is
+    // why that map has no corners at all.
+    std::vector<int> mLapVertices;
+    std::vector<float> mVertexArc;
+    // The resampling step, in world units: station i sits exactly i steps along that polyline, so
+    // this is what turns a vertex's arc into a fractional station position. Zero until resampled.
+    float mVertexArcStep = 0.0f;
     std::vector<int> mStationForCheckpoint;
     std::vector<Curve> mCurves;
     unsigned mCurveGeneration = 0;

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <vector>
 
 #include "accessibility/a11y_log.h"
 #include "accessibility/race/anticipation.h"
@@ -14,19 +16,20 @@ namespace {
 // the player's decision. The rungs are the game's own physics for its reference vehicle
 // (Standard Kart M with Mario at 150cc, 79.8 units/frame; Kinoko KartMove::calcRotation, stats
 // from kartParam.bin/driverParam.bin): full stick without a drift holds a 6,800-unit radius, a
-// drift with its outside-drift bonus about 3,300. Half the stick is twice the radius, and so on.
-constexpr float kRadiusHairpin = 3300.0f;  // even a drift cannot hold it: slow down
-constexpr float kRadiusHard = 6800.0f;     // a drift is necessary
+// drift with its outside-drift bonus about half of that. Half the stick is twice the radius.
+constexpr float kRadiusHard = 6800.0f;               // a drift is necessary
 constexpr float kRadiusNormal = 2.0f * kRadiusHard;  // half stick
 constexpr float kRadiusEnter = 4.0f * kRadiusHard;   // a quarter of the stick: a corner begins
-constexpr float kRadiusKeep = 2.0f * kRadiusEnter;   // hysteresis: it lasts while it needs any
 
-// Two same-side bends closer than the last countdown lead at the reference speed are one corner.
-constexpr float kMergeGapUnits = kReferenceSpeedUnitsPerSec * kCountdownLeadSec[kCountdownStages - 1];
+// The game's own "this is a corner": the CPU drifts when the signed turn angle at the ENPT vertex
+// it is heading for reaches this (func_8073D284, constant at guest 0x808CB04C).
+constexpr float kTurnCornerRad = 0.30f;
 
-// A run has to turn at least this much in total to be worth calling, or every wiggle in the line
-// becomes a corner. Degrees of heading change, which is spacing-invariant.
-constexpr float kCurveMinDegrees = 15.0f;
+// And it only starts that drift once it is this close to the turning vertex (func_8072A37C tests
+// the route controller's distance to its target against the constant at guest 0x808C9CEC;
+// docs/cpu-corner-logic.md). So it bounds both ends of a corner and merges two same-side bends
+// closer than this: the CPU never straightens between them.
+constexpr float kDriftApproachUnits = 5000.0f;
 
 // A hard corner that turns at least this much overall is a hairpin (the rally pace-note sense).
 constexpr float kHairpinDegrees = 120.0f;
@@ -34,253 +37,226 @@ constexpr float kHairpinDegrees = 120.0f;
 constexpr float kPi = 3.14159265358979f;
 constexpr float kRadToDeg = 180.0f / kPi;
 
-struct Run {
-    int first = 0;  // station index, inclusive
-    int last = 0;   // station index, inclusive; wraps past first
+// Consecutive authored vertices turning the same way - what the CPU drifts through in one go.
+struct VertexRun {
+    int first = 0;  // lap vertex index, inclusive
+    int last = 0;   // lap vertex index, inclusive; wraps past first
     int sign = 0;
-    float peak = 0.0f;
-    bool entered = false;  // reached the enter threshold, not just the keep one
+    float total = 0.0f;  // signed sum of the turn angles, radians
+    float peak = 0.0f;   // largest |turn| of any vertex in the run
+    bool forced = false;
 };
-
-TurnSeverity SeverityFor(float curvature, float totalDegrees) {
-    const bool hard = curvature >= 1.0f / kRadiusHard;
-    if (curvature >= 1.0f / kRadiusHairpin || (hard && totalDegrees >= kHairpinDegrees)) {
-        return TurnSeverity::Hairpin;
-    }
-    if (hard) {
-        return TurnSeverity::Hard;
-    }
-    if (curvature >= 1.0f / kRadiusNormal) {
-        return TurnSeverity::Normal;
-    }
-    return TurnSeverity::Easy;
-}
 
 }  // namespace
 
-// Corners as runs of same-signed curvature on the uniform grid, with hysteresis: a run opens at
-// the keep threshold, counts only if it reaches the enter threshold, and closes when the
-// curvature drops under keep or changes sign - a chicane is two corners, never one blurred one.
-// Same-signed runs too close to count down separately are one corner with a kink in it.
+// Corners exactly as the game's CPU drivers see them: a signed turn angle at every AUTHORED route
+// vertex, runs of vertices turning the same way, and the drift-approach distance both bounding a
+// run and joining two runs the driver would never straighten between. The alternative - grading a
+// smoothed curvature on the resampled grid - graded the same bend differently per course, because
+// the smoothing window was that course's corridor width (312-1211 units).
 void CourseMap::BuildCurves() {
-    const int n = StationCount();
     mCurves.clear();
     ++mCurveGeneration;
-    if (n < kMinStations || !(mMeanSpacing > 0.0f)) {
+
+    const int nv = static_cast<int>(mLapVertices.size());
+    const int stations = StationCount();
+    if (nv < kMinStations || static_cast<int>(mVertexArc.size()) != nv ||
+        !(mVertexArcStep > 0.0f) || stations < kMinStations) {
+        RT_LOGF(RT_TAG_A11Y, "curve map: no authored route, no corners\n");
         return;
     }
-    const float kappaEnter = 1.0f / kRadiusEnter;
-    const float kappaKeep = 1.0f / kRadiusKeep;
-    auto curvature = [&](int i) { return mCurvature[static_cast<std::size_t>(Wrap(i))]; };
-    auto signOf = [&](float k) { return std::fabs(k) < kappaKeep ? 0 : (k > 0.0f ? 1 : -1); };
+    const float lap = mVertexArcStep * static_cast<float>(stations);
 
-    // Scanning starts on a straight, so a corner straddling the finish line is walked whole. A
-    // lap with no straight at all is one continuous curve (an oval), emitted as one.
-    int origin = -1;
-    for (int i = 0; i < n; ++i) {
-        if (signOf(curvature(i)) == 0) {
-            origin = i;
-            break;
+    auto wrapIndex = [nv](int k) {
+        const int m = k % nv;
+        return m < 0 ? m + nv : m;
+    };
+    auto wrapArc = [lap](float d) {
+        d = std::fmod(d, lap);
+        return d < 0.0f ? d + lap : d;
+    };
+    auto vertex = [this](int k) -> const RoutePoint& {
+        return mGraph.Authored(mLapVertices[static_cast<std::size_t>(k)]);
+    };
+    auto arcAt = [this](int k) { return mVertexArc[static_cast<std::size_t>(k)]; };
+    // The segment leaving vertex k, in the same arc domain as the landmarks.
+    auto segment = [&](int k) { return wrapArc(arcAt(wrapIndex(k + 1)) - arcAt(k)); };
+
+    // The turn angle at each vertex, signed right-positive on the map's own perpendicular so that
+    // speech, pan and this all share one convention.
+    std::vector<float> turn(static_cast<std::size_t>(nv), 0.0f);
+    std::vector<int> sign(static_cast<std::size_t>(nv), 0);
+    for (int k = 0; k < nv; ++k) {
+        const RoutePoint& prev = vertex(wrapIndex(k - 1));
+        const RoutePoint& here = vertex(k);
+        const RoutePoint& next = vertex(wrapIndex(k + 1));
+        float ax = here.x - prev.x, az = here.z - prev.z;
+        float bx = next.x - here.x, bz = next.z - here.z;
+        const float aLen = std::sqrt(ax * ax + az * az);
+        const float bLen = std::sqrt(bx * bx + bz * bz);
+        if (!(aLen > 0.0f) || !(bLen > 0.0f)) {
+            continue;
         }
-    }
-    std::vector<Run> runs;
-    if (origin < 0) {
-        Run whole;
-        whole.first = 0;
-        whole.last = n - 1;
-        float sum = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            sum += curvature(i);
-            whole.peak = std::max(whole.peak, std::fabs(curvature(i)));
-        }
-        whole.sign = sum >= 0.0f ? 1 : -1;
-        whole.entered = true;
-        runs.push_back(whole);
-    } else {
-        Run run;
-        bool open = false;
-        for (int step = origin + 1; step <= origin + n; ++step) {
-            const int i = Wrap(step);
-            const float k = curvature(i);
-            const int sign = signOf(k);
-            if (open && sign != run.sign) {
-                if (run.entered) {
-                    runs.push_back(run);
-                }
-                open = false;
-            }
-            if (sign == 0) {
-                continue;
-            }
-            if (!open) {
-                run = Run{};
-                run.first = i;
-                run.sign = sign;
-                open = true;
-            }
-            run.last = i;
-            run.peak = std::max(run.peak, std::fabs(k));
-            run.entered = run.entered || std::fabs(k) >= kappaEnter;
-        }
-        if (open && run.entered) {
-            runs.push_back(run);
+        ax /= aLen;
+        az /= aLen;
+        bx /= bLen;
+        bz /= bLen;
+        const float rightX = az * mRightPerpSign;
+        const float rightZ = -ax * mRightPerpSign;
+        const float angle = std::acos(std::clamp(ax * bx + az * bz, -1.0f, 1.0f));
+        const float side = bx * rightX + bz * rightZ;
+        turn[static_cast<std::size_t>(k)] = side > 0.0f ? angle : -angle;
+        // A vertex needing less than a quarter of the stick is a straight one, whatever it says.
+        const float localRadius =
+            angle > 0.0f ? 0.5f * (aLen + bLen) / angle : std::numeric_limits<float>::max();
+        if (localRadius < kRadiusEnter) {
+            sign[static_cast<std::size_t>(k)] = side > 0.0f ? 1 : -1;
         }
     }
 
-    // Merge same-signed neighbours whose gap is too short to count down separately - less than
-    // the last countdown lead at the reference speed - or shorter than the road is wide. The
-    // driver never straightens between them, so they are one corner with a kink.
-    const float mergeGapUnits = std::max(2.0f * mMedianHalfWidth, kMergeGapUnits);
-    std::vector<Run> merged;
-    for (const Run& r : runs) {
+    // Walking from the least-turning vertex means a corner over the lap seam is walked whole.
+    int origin = 0;
+    for (int k = 1; k < nv; ++k) {
+        if (std::fabs(turn[static_cast<std::size_t>(k)]) <
+            std::fabs(turn[static_cast<std::size_t>(origin)])) {
+            origin = k;
+        }
+    }
+    std::vector<VertexRun> runs;
+    VertexRun open;
+    bool isOpen = false;
+    for (int step = 1; step <= nv; ++step) {
+        const int k = wrapIndex(origin + step);
+        const std::size_t u = static_cast<std::size_t>(k);
+        const bool forced = vertex(k).driftSetting == kRouteForceDrift;
+        if (isOpen && sign[u] != open.sign && sign[u] != 0) {
+            runs.push_back(open);
+            isOpen = false;
+        }
+        if (sign[u] == 0 && !forced) {
+            if (isOpen) {
+                runs.push_back(open);
+                isOpen = false;
+            }
+            continue;
+        }
+        if (!isOpen) {
+            open = VertexRun{};
+            open.first = k;
+            open.sign = sign[u];
+            isOpen = true;
+        }
+        open.last = k;
+        open.total += turn[u];
+        open.peak = std::max(open.peak, std::fabs(turn[u]));
+        open.forced = open.forced || forced;
+    }
+    if (isOpen) {
+        runs.push_back(open);
+    }
+
+    auto join = [](VertexRun& into, const VertexRun& from) {
+        into.last = from.last;
+        into.total += from.total;
+        into.peak = std::max(into.peak, from.peak);
+        into.forced = into.forced || from.forced;
+    };
+    std::vector<VertexRun> merged;
+    for (const VertexRun& r : runs) {
         if (!merged.empty()) {
-            Run& prev = merged.back();
-            const float gap = WrapForward(ArcAt(r.first) - ArcAt(prev.last));
-            if (prev.sign == r.sign && gap <= mergeGapUnits) {
-                prev.last = r.last;
-                prev.peak = std::max(prev.peak, r.peak);
+            VertexRun& prev = merged.back();
+            if (prev.sign == r.sign &&
+                wrapArc(arcAt(r.first) - arcAt(prev.last)) < kDriftApproachUnits) {
+                join(prev, r);
                 continue;
             }
         }
         merged.push_back(r);
     }
-    // The seam: the scan began on a straight, but that straight can be shorter than the merge gap.
-    if (merged.size() >= 2) {
-        Run& last = merged.back();
-        const Run& first = merged.front();
-        if (last.sign == first.sign &&
-            WrapForward(ArcAt(first.first) - ArcAt(last.last)) <= mergeGapUnits) {
-            last.last = first.last;
-            last.peak = std::max(last.peak, first.peak);
-            merged.erase(merged.begin());
-        }
+    // The seam again: the scan started at the least-turning vertex, which can still be inside a
+    // drift the CPU never released.
+    if (merged.size() >= 2 && merged.front().sign == merged.back().sign &&
+        wrapArc(arcAt(merged.front().first) - arcAt(merged.back().last)) < kDriftApproachUnits) {
+        const VertexRun head = merged.front();
+        merged.erase(merged.begin());
+        join(merged.back(), head);
     }
 
-    for (const Run& r : merged) {
-        // Total heading change from the raw per-station turns, shortest way each, so a 230
-        // degree hairpin stays 230 degrees.
-        float total = 0.0f;
-        int count = 0;
-        for (int step = r.first;; step = Wrap(step + 1)) {
-            total += mRawTurn[static_cast<std::size_t>(step)];
-            if (++count > n || step == r.last) {
+    for (const VertexRun& r : merged) {
+        const float total = std::fabs(r.total);
+        if (total < kTurnCornerRad && !r.forced) {
+            continue;
+        }
+        // The bend reaches back into the segment before its first vertex and on into the one after
+        // its last, as far as the CPU's own drift approach and no further.
+        const float entryArc = wrapArc(
+            arcAt(r.first) - std::min(0.5f * segment(wrapIndex(r.first - 1)), kDriftApproachUnits));
+        const float exitArc =
+            wrapArc(arcAt(r.last) + std::min(0.5f * segment(r.last), kDriftApproachUnits));
+        float length = wrapArc(exitArc - entryArc);
+        if (!(length > 0.0f)) {
+            length = lap;  // a run that is the whole lap: an oval
+        }
+
+        // The corridor absorbs part of a bend: a turn of angle theta made inside a band of
+        // half-width w can be driven at a radius up to w*cos(theta/2)/(1-cos(theta/2)), one
+        // half-width being the lateral room the racing line actually uses. The band is the game's
+        // own CPU corridor, taken at the run's median vertex so one wide point cannot flatten it.
+        std::vector<float> widths;
+        for (int k = r.first, guard = 0; guard <= nv; ++guard) {
+            widths.push_back(vertex(k).range * kCorridorPerRange);
+            if (k == r.last) {
                 break;
             }
+            k = wrapIndex(k + 1);
         }
-        const float totalDegrees = std::fabs(total) * kRadToDeg;
-        if (totalDegrees < kCurveMinDegrees) {
+        std::sort(widths.begin(), widths.end());
+        const float halfWidth = widths[widths.size() / 2];
+        const float cosHalf = std::cos(std::min(total, kPi) * 0.5f);
+        const float absorbed = cosHalf < 1.0f ? halfWidth * cosHalf / (1.0f - cosHalf)
+                                              : std::numeric_limits<float>::max();
+        const float radius = std::max(length / total, absorbed);
+        if (radius >= kRadiusEnter && !r.forced) {
             continue;
         }
+
+        // The apex is where half of the run's turning has been done.
+        float turned = 0.0f;
+        int apexVertex = r.first;
+        for (int k = r.first, guard = 0; guard <= nv; ++guard) {
+            turned += std::fabs(turn[static_cast<std::size_t>(k)]);
+            if (turned >= total * 0.5f || k == r.last) {
+                apexVertex = k;
+                break;
+            }
+            k = wrapIndex(k + 1);
+        }
+
+        const float degrees = total * kRadToDeg;
         Curve curve;
-        curve.first = r.first;
-        curve.last = r.last;
-        // SignedTurnAt already signs against the settled right vector, so this IS the mod's one
-        // "right" convention; multiplying by the perpendicular sign again mirrored every corner
-        // on the courses that vote -1 (Luigi Circuit, 2026-09-02).
-        curve.right = total > 0.0f;
-        curve.peakCurvature = r.peak;
-        curve.severity = SeverityFor(r.peak, totalDegrees);
-        curve.totalDegrees = totalDegrees;
+        curve.firstVertex = r.first;
+        curve.lastVertex = r.last;
+        curve.entryPos = entryArc / mVertexArcStep;
+        curve.apexPos = arcAt(apexVertex) / mVertexArcStep;
+        curve.exitPos = exitArc / mVertexArcStep;
+        curve.right = r.sign > 0;
+        if (radius < kRadiusHard) {
+            curve.severity =
+                degrees >= kHairpinDegrees ? TurnSeverity::Hairpin : TurnSeverity::Hard;
+        } else if (radius < kRadiusNormal) {
+            curve.severity = TurnSeverity::Normal;
+        }
+        curve.totalDegrees = degrees;
+        curve.radius = radius;
+        curve.driftPoint = r.peak >= kTurnCornerRad || r.forced;
+        curve.forced = r.forced;
         mCurves.push_back(curve);
     }
+    std::sort(mCurves.begin(), mCurves.end(),
+              [](const Curve& a, const Curve& b) { return a.entryPos < b.entryPos; });
+
     RefreshCurveArcs();
     LogCurveMap();
-}
-
-void CourseMap::RefreshCurveArcs() {
-    for (Curve& curve : mCurves) {
-        // A station's turn happens at the station; the bend occupies half of each neighbouring
-        // segment. Real arcs, so the checkpoint fallback's uneven stations are honoured too.
-        curve.entry = WrapForward(ArcAt(curve.first) - ArcForward(curve.first - 1, curve.first) * 0.5f);
-        const float exit =
-            WrapForward(ArcAt(curve.last) + ArcForward(curve.last, curve.last + 1) * 0.5f);
-        curve.length = std::max(WrapForward(exit - curve.entry), mMeanSpacing);
-        // Long when the corner is at least a straight long: it outlasts its own countdown at
-        // the reference speed, so the call says so.
-        curve.isLong = curve.length >= kStraightUnits;
-    }
-    // Runs: a corner closer than a straight to the one before it rides in that one's run. A lap
-    // of nothing but corners still needs one leader, the corner after the widest gap.
-    const std::size_t count = mCurves.size();
-    std::size_t leader = 0;
-    float widestGap = -1.0f;
-    for (std::size_t i = 0; i < count; ++i) {
-        const Curve& prev = mCurves[(i + count - 1) % count];
-        const float gap = count > 1 ? GapAfter(prev, mCurves[i]) : mLapLength;
-        mCurves[i].follower = gap < kStraightUnits;
-        if (gap > widestGap) {
-            widestGap = gap;
-            leader = i;
-        }
-    }
-    if (count > 0) {
-        mCurves[leader].follower = false;
-    }
-}
-
-// Temporary. Dumps what the segmentation actually produced, so a cue that lands in the wrong place
-// can be traced to the map rather than to the cue.
-void CourseMap::LogCurveMap() const {
-    RT_LOGF(RT_TAG_A11Y, "curve map: %d stations, lap %.0f, spacing %.0f, %d curves\n",
-            StationCount(), static_cast<double>(mLapLength), static_cast<double>(mMeanSpacing),
-            static_cast<int>(mCurves.size()));
-    for (std::size_t i = 0; i < mCurves.size(); ++i) {
-        const Curve& c = mCurves[i];
-        RT_LOGF(RT_TAG_A11Y,
-                "  curve %d entry=%.0f length=%.0f %s severity=%d radius=%.0f total=%.0fdeg "
-                "long=%d %s\n",
-                static_cast<int>(i), static_cast<double>(c.entry), static_cast<double>(c.length),
-                c.right ? "right" : "left", static_cast<int>(c.severity),
-                static_cast<double>(c.peakCurvature > 0.0f ? 1.0f / c.peakCurvature : 0.0f),
-                static_cast<double>(c.totalDegrees), c.isLong ? 1 : 0,
-                c.follower ? "follower" : "leader");
-    }
-}
-
-const Curve* CourseMap::CurveContaining(float arc) const {
-    for (const Curve& curve : mCurves) {
-        if (ArcBetween(curve.entry, arc) <= curve.length) {
-            return &curve;
-        }
-    }
-    return nullptr;
-}
-
-const Curve* CourseMap::CurveAfter(const Curve& from) const {
-    const Curve* best = nullptr;
-    float bestAhead = 0.0f;
-    const float exit = CurveExit(from);
-    for (const Curve& curve : mCurves) {
-        if (&curve == &from) {
-            continue;
-        }
-        const float ahead = ArcBetween(exit, curve.entry);
-        if (best == nullptr || ahead < bestAhead) {
-            best = &curve;
-            bestAhead = ahead;
-        }
-    }
-    return best != nullptr ? best : (mCurves.empty() ? nullptr : &from);
-}
-
-const Curve* CourseMap::CurveBefore(const Curve& from) const {
-    const Curve* best = nullptr;
-    float bestBehind = 0.0f;
-    for (const Curve& curve : mCurves) {
-        if (&curve == &from) {
-            continue;
-        }
-        const float behind = ArcBetween(CurveExit(curve), from.entry);
-        if (best == nullptr || behind < bestBehind) {
-            best = &curve;
-            bestBehind = behind;
-        }
-    }
-    return best != nullptr ? best : (mCurves.empty() ? nullptr : &from);
-}
-
-float CourseMap::GapAfter(const Curve& from, const Curve& next) const {
-    return ArcBetween(CurveExit(from), next.entry);
 }
 
 }  // namespace a11y::race

@@ -34,6 +34,7 @@ float SegmentDistanceSq(float px, float py, float pz, const RoutePoint& a, const
 
 void RouteGraph::Clear() {
     mPoints.clear();
+    mAuthored.clear();
     mLap.clear();
 }
 
@@ -45,9 +46,18 @@ const RoutePoint& RouteGraph::Point(int index) const {
     return mPoints[index];
 }
 
+const RoutePoint& RouteGraph::Authored(int index) const {
+    static const RoutePoint kEmpty;
+    if (index < 0 || index >= static_cast<int>(mAuthored.size())) {
+        return kEmpty;
+    }
+    return mAuthored[index];
+}
+
 void RouteGraph::Build(std::vector<RoutePoint> points, std::uint8_t startPoint) {
     Clear();
     mPoints = std::move(points);
+    mAuthored = mPoints;
     SmoothPositions();
     BuildLap(startPoint);
 

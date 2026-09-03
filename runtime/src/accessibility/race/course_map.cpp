@@ -48,8 +48,9 @@ void CourseMap::Clear() {
     mGraph.Clear();
     mPoints.clear();
     mArc.clear();
-    mCurvature.clear();
-    mRawTurn.clear();
+    mLapVertices.clear();
+    mVertexArc.clear();
+    mVertexArcStep = 0.0f;
     mStationForCheckpoint.clear();
     mCurves.clear();
     ++mCurveGeneration;
@@ -214,9 +215,8 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
     }
 
     BuildCheckpointMap(checkpoints);
-    // Curvature signs read the right vector, which BuildCheckpointMap settles, so this has to run
+    // Corner sides read the right vector, which BuildCheckpointMap settles, so this has to run
     // after it.
-    BuildCurvature();
     BuildCurves();
     mRouteBased = routeLap && lapSane;
     return mRouteBased;
@@ -258,6 +258,12 @@ void CourseMap::ResampleUniform() {
     const int count = std::max(kMinStations, static_cast<int>(std::lround(lap / spacing)));
     const float step = lap / static_cast<float>(count);  // exact, so the seam closes
 
+    // Where each authored vertex sits along the polyline this walks, kept before the stations
+    // replace it: the corner model works in this arc domain, and station i is exactly i steps
+    // along it, so one division turns a vertex arc into a fractional station position.
+    mVertexArc.assign(arc.begin(), arc.begin() + n);
+    mVertexArcStep = step;
+
     std::vector<Station> resampled;
     resampled.reserve(static_cast<std::size_t>(count));
     int seg = 0;
@@ -282,39 +288,6 @@ void CourseMap::ResampleUniform() {
     mPoints = std::move(resampled);
 }
 
-// Heading change at each station, then curvature smoothed over one road width (the station and
-// its two neighbours, at one half-width spacing) so a single kinked sample is not a corner.
-void CourseMap::BuildCurvature() {
-    const int n = StationCount();
-    mRawTurn.assign(static_cast<std::size_t>(n), 0.0f);
-    mCurvature.assign(static_cast<std::size_t>(n), 0.0f);
-    if (n < kMinStations) {
-        return;
-    }
-    std::vector<float> raw(static_cast<std::size_t>(n), 0.0f);
-    for (int i = 0; i < n; ++i) {
-        raw[static_cast<std::size_t>(i)] = SignedTurnAt(i);
-        float px, pz, cx, cz, nx, nz;
-        Centre(i - 1, px, pz);
-        Centre(i, cx, cz);
-        Centre(i + 1, nx, nz);
-        const float span = (Hypot2(cx - px, cz - pz) + Hypot2(nx - cx, nz - cz)) * 0.5f;
-        mRawTurn[static_cast<std::size_t>(i)] = raw[static_cast<std::size_t>(i)] * span;
-    }
-    for (int i = 0; i < n; ++i) {
-        mCurvature[static_cast<std::size_t>(i)] =
-            (raw[static_cast<std::size_t>(Wrap(i - 1))] + raw[static_cast<std::size_t>(i)] +
-             raw[static_cast<std::size_t>(Wrap(i + 1))]) /
-            3.0f;
-    }
-}
-
-float CourseMap::CurvatureAt(int i) const {
-    return mCurvature.empty() ? 0.0f : mCurvature[static_cast<std::size_t>(Wrap(i))];
-}
-
-
-
 // The positions arrive already smoothed - RouteGraph::Build does it once, on the way in, so the
 // stations and the lateral offset cannot drift onto two different lines.
 bool CourseMap::BuildRouteStations() {
@@ -322,6 +295,7 @@ bool CourseMap::BuildRouteStations() {
         return false;
     }
     const std::vector<int>& lap = mGraph.Lap();
+    mLapVertices = lap;  // the corner model reads these points' AUTHORED positions
     mPoints.reserve(lap.size());
     for (int index : lap) {
         const RoutePoint& point = mGraph.Point(index);
@@ -343,6 +317,7 @@ void CourseMap::BuildCheckpointStations(const std::vector<Checkpoint>& checkpoin
     RT_LOGF(RT_TAG_A11Y, "course map: no route lap, ordering from %d checkpoints\n",
             static_cast<int>(checkpoints.size()));
     mPoints.clear();  // never mix fallback midpoints with partial route stations
+    mLapVertices.clear();  // and no authored vertices, so this map has no corners
     mPoints.reserve(checkpoints.size());
     for (const Checkpoint& cp : checkpoints) {
         Station station;
@@ -459,46 +434,6 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
                 bound);
     }
     mHintWindow = std::min(widest + 1, bound);
-}
-
-// Curvature at a station, signed positive to the right, in radians of heading change per unit of
-// travel - the reciprocal of the corner radius.
-float CourseMap::SignedTurnAt(int i) const {
-    float px, pz, cx, cz, nx, nz;
-    Centre(i - 1, px, pz);
-    Centre(i, cx, cz);
-    Centre(i + 1, nx, nz);
-
-    float ax = cx - px, az = cz - pz;
-    float bx = nx - cx, bz = nz - cz;
-    const float aLen = Hypot2(ax, az);
-    const float bLen = Hypot2(bx, bz);
-    if (aLen <= 0.0f || bLen <= 0.0f) {
-        return 0.0f;
-    }
-    ax /= aLen;
-    az /= aLen;
-    bx /= bLen;
-    bz /= bLen;
-
-    const float dot = std::clamp(ax * bx + az * bz, -1.0f, 1.0f);
-    const float angle = std::acos(dot);
-
-    // Signed against the station's own right vector, so "right" stays the one convention the whole
-    // mod shares.
-    float rx, rz;
-    RightVector(i, rx, rz);
-    // A station whose neighbours coincide - a hairpin taken in two stations - has no forward, so
-    // Forward leaves a null vector and its perpendicular is null too. Zero is the honest answer:
-    // falling through would grade every such corner as a right-hander on `sideChange >= 0`.
-    if (Hypot2(rx, rz) <= 0.0f) {
-        return 0.0f;
-    }
-    const float sideChange = (bx * rx + bz * rz) - (ax * rx + az * rz);
-
-    const float span = (aLen + bLen) * 0.5f;
-    const float curvature = span > 0.0f ? angle / span : 0.0f;
-    return sideChange >= 0.0f ? curvature : -curvature;
 }
 
 float CourseMap::ArcForward(int from, int to) const {
@@ -767,7 +702,7 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     }
 
     // Arcs descend from the positions, so they are rebuilt and the corners' landmarks re-read
-    // from them. The corners themselves, the curvature they came from, the right-hand sign and
+    // from them. The corners themselves, the vertices they came from, the right-hand sign and
     // the checkpoint mapping are NOT: the corners describe the road, and the sign is the mod's
     // one direction convention. (A racing line that crosses the road between two corners bends
     // in an S there; counting that S as corners and reverting the whole line on it kept every

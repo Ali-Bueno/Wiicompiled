@@ -32,9 +32,17 @@ struct RoutePoint {
     // that came from ReadCourseItemRoute - ITPT's own field at the same struct offset means
     // something else entirely (docs/mkwii-track-format.md).
     float range = 0.0f;
+    // ENPT setting2, the author's drift instruction to the CPU at this point: 1 end the drift,
+    // 2 forbid drifting, 3 drift here whatever the geometry says. Zero on an item-route point,
+    // which has no such field.
+    std::uint8_t driftSetting = 0;
     std::uint8_t next[kMaxRouteLinks] = {};
     std::uint8_t nextCount = 0;
 };
+
+// The value of RoutePoint::driftSetting that orders a drift: AI::ENPTSettingsHolder::MustDrift
+// (0x8073EC70) is `setting2 == 3`.
+inline constexpr std::uint8_t kRouteForceDrift = 3;
 
 // Non-zero while a course is loaded: the KMP manager pointer, which has exactly two writers in the
 // whole game, one setting it and one clearing it on scene exit. Says nothing about *which* course -

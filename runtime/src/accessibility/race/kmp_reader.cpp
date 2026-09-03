@@ -42,6 +42,8 @@ constexpr std::uint32_t kEnptX = 0x00;
 constexpr std::uint32_t kEnptY = 0x04;
 constexpr std::uint32_t kEnptZ = 0x08;
 constexpr std::uint32_t kEnptRange = 0x0C;
+// setting2, read by the settings loader func_8073EB8C as a byte at this offset of the raw entry.
+constexpr std::uint32_t kEnptSetting2 = 0x12;
 
 // KMP::Manager::Init stores the ITPT section at +0x18 (it writes manager+0x18 straight after
 // ParseITPT, and KMP::Manager::GetITPTCount (0x80512CEC) reads it back). The section object has
@@ -173,6 +175,9 @@ bool ReadCourseRoute(std::vector<RoutePoint>& out) {
             out.clear();
             return false;
         }
+        // Best effort: a drift setting that does not read leaves the point un-forced, which costs
+        // one corner its hint and never the whole route.
+        TryU8(raw + kEnptSetting2, point.driftSetting);
         // A point with no successors is legal - it ends a branch - so a failed link read costs
         // that point its links and never the whole route. The count byte is the guest's; the
         // format caps links at 6, so the walk is bounded by both and a corrupt count cannot read

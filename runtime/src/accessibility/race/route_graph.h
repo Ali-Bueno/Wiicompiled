@@ -33,6 +33,10 @@ public:
     const std::vector<int>& Lap() const { return mLap; }
 
     const RoutePoint& Point(int index) const;
+    // The same point exactly as the course author placed it, before the smoothing above moved it.
+    // The corner model runs on these: the game's own corner test is a turn angle at the authored
+    // vertices, and smoothing is what a turn angle is most sensitive to.
+    const RoutePoint& Authored(int index) const;
     int PointCount() const { return static_cast<int>(mPoints.size()); }
 
     // Where the kart sits across the road: -1 at the left edge of the game's own corridor, 0 on
@@ -60,6 +64,7 @@ private:
     void SmoothPositions();
 
     std::vector<RoutePoint> mPoints;
+    std::vector<RoutePoint> mAuthored;  // as read, kept from before SmoothPositions
     std::vector<int> mLap;
 };
 

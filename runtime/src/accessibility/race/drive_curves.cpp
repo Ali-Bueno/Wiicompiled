@@ -25,10 +25,12 @@ constexpr float kApproachPitch[] = {1.0f, 1.25f, 1.55f};  // MK64 DriveAssist.cp
 
 // A run of corners is one thing to drive (the player's spec, 2026-08-28 and 2026-09-03): the
 // phrase names the run, the countdown sounds before its FIRST corner only, every corner keeps
-// its entry/apex/exit beeps, and the next run's call waits until the kart is on the straight
-// before it. Which corners chain is the course's own (Curve::follower). At most this many
-// corners share one phrase.
-constexpr int kMaxChain = 3;
+// its entry/apex/exit beeps, and nothing more is spoken until the kart is out of the last corner
+// named. Which corners chain is the course's own (Curve::follower). At most this many corners
+// share one phrase; a longer run gets its next phrase on leaving the last one named. Two, as
+// Forza's Turn Navigation does ("right 2 into right 3", never three; player's decision
+// 2026-09-03, docs/forza-blind-driving-assist.md 4b).
+constexpr int kMaxChain = 2;
 
 
 // TWO cue families, which must never be mistaken for each other (MK64 AudioCueService.cpp:67-68:
@@ -40,12 +42,15 @@ constexpr Waveform kApproachShape = Waveform::Sine;
 constexpr float kApproachHz = 700.0f;   // MK64 AudioCueService.cpp:166
 constexpr float kApproachSec = 0.081f;  // MK64's 2600 samples at 32 kHz
 
-// Traversal: hollow square, lower register; entry and apex share a pitch, the exit rises to mark
-// the end (MK64 DriveAssist.cpp:90-93).
+// Traversal: hollow square, lower register; entry, apex and exit share a pitch, and only the exit
+// of the LAST corner of a run rises - as Forza's gate cues do, so a level exit beep itself says
+// another corner follows (player's decision 2026-09-03, docs/forza-blind-driving-assist.md 4b).
 constexpr Waveform kCurveShape = Waveform::Square;
 constexpr float kCurveHz = 440.0f;   // MK64 AudioCueService.cpp:167
 constexpr float kCurveSec = 0.094f;  // MK64's 3000 samples at 32 kHz
-constexpr float kPhasePitch[] = {1.0f, 1.0f, 1.0f, 1.5f};  // index = phase reached
+constexpr float kLandmarkPitch = 1.0f;
+constexpr float kRunEndPitch = 1.5f;  // MK64 DriveAssist.cpp:90-93's exit pitch
+constexpr int kExitPhase = 3;
 // Beeps lean towards the OUTSIDE of the corner - the side being drifted into, the one to steer
 // away from - the same direction language as the engine pan and the edge cue.
 constexpr float kBeepPan = 0.8f;
@@ -107,7 +112,7 @@ float LeadSeconds(float distance, float speed) {
 }  // namespace
 
 void PlayCurveCueDemo() {
-    CueSpec beep = LandmarkBeep(kPhasePitch[1], /*right=*/true);
+    CueSpec beep = LandmarkBeep(kLandmarkPitch, /*right=*/true);
     beep.pan = kDemoCurvePan;
     CueService::Instance().PlayOneShot(CueChannel::Curve, beep);
 }
@@ -158,6 +163,25 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
 
     const Curve* inside = map.CurveContaining(arc);
 
+    // The corner about to be entered: the nearest entry ahead, not counting the one being driven.
+    std::size_t nextIndex = curves.size();
+    float nextToEntry = 0.0f;
+    for (std::size_t i = 0; i < curves.size(); ++i) {
+        const float toEntry = map.ArcBetween(arc, curves[i].entry);
+        if (map.ArcBetween(curves[i].entry, arc) <= curves[i].length) {
+            continue;
+        }
+        if (nextIndex == curves.size() || toEntry < nextToEntry) {
+            nextIndex = i;
+            nextToEntry = toEntry;
+        }
+    }
+    // A corner entered before it could be named - the fourth of a run with no gap between its
+    // corners - is named at its entry: still the corner being entered, never one beyond it.
+    if (inside != nullptr && !mCues[static_cast<std::size_t>(inside - curves.data())].called) {
+        nextIndex = static_cast<std::size_t>(inside - curves.data());
+    }
+
     for (std::size_t i = 0; i < curves.size(); ++i) {
         const Curve& c = curves[i];
         CornerCues& cue = mCues[i];
@@ -176,22 +200,20 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         }
         // A corner that is the whole lap (an oval) is never left: back before its apex after
         // passing it is the next lap, and it re-arms there.
-        if (within && cue.phase >= 2 && since < c.length * 0.5f) {
+        // Measured against the real apex: with the midpoint, an apex placed before it re-armed the
+        // corner every frame and looped its entry and apex beeps (Moo Moo Meadows, 2026-09-03).
+        if (within && cue.phase >= 2 && since < map.ArcBetween(c.entry, c.apex)) {
             cue = CornerCues{};
         }
 
         const float lead = LeadSeconds(toEntry, speed);
 
-        // A run's call waits for the straight before it: not merely "outside a corner", which is
-        // also true in every gap inside the previous run and had the next run announced while
-        // the current one was still being driven (Moo Moo Meadows, 2026-09-03). A follower never
-        // opens a phrase; it is named in its leader's, or at its predecessor's apex below.
-        const Curve* before = map.CurveBefore(c);
-        const bool onStraightBefore =
-            before == nullptr || before == &c ||
-            map.ArcBetween(map.CurveExit(*before), arc) <= map.GapAfter(*before, c);
-        if (!cue.called && !c.follower && !within && inside == nullptr && onStraightBefore &&
-            lead <= kSpokenLeadSec) {
+        // The player's rule (2026-09-03): a call is always the corner about to be entered, spoken
+        // only from outside any corner, never from inside one - not at an apex, not while a
+        // phrase's own corners are still being driven. So only the NEAREST corner ahead can open
+        // a phrase, and only once the kart is on open road; the phrase then chains what follows.
+        if (i == nextIndex && !cue.called && (inside == nullptr || inside == &c) &&
+            (within || lead <= kSpokenLeadSec)) {
             std::string phrase = CurvePhrase(c);
             cue.called = true;
             const Curve* last = &c;
@@ -216,8 +238,11 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
                     static_cast<double>(lead));
         }
 
-        // Only the corner that opens a run counts down; a follower has no straight to count on.
-        if (!within && !c.follower && cue.stagesDone < kCountdownStages &&
+        // Every corner counts down with the stages its own straight has room for: a stage due
+        // while the kart is still inside the previous corner is forfeited below, so a short
+        // straight gives one or two beeps and no straight gives none (player, 2026-09-03: "por
+        // mucho que haya una minirrecta ni da tiempo a hacer la cuenta atrás").
+        if (!within && cue.stagesDone < kCountdownStages &&
             lead <= kCountdownLeadSec[cue.stagesDone]) {
             // Only the furthest stage already reached: a respawn landing inside every window
             // must not cram three beeps into three frames.
@@ -239,34 +264,22 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
             if (reached < 1 && within) {
                 reached = 1;
             }
-            if (reached >= 1 && reached < 2 && since >= c.length * 0.5f) {
+            if (reached >= 1 && reached < 2 && since >= map.ArcBetween(c.entry, c.apex)) {
                 reached = 2;
             }
             if (reached >= 1 && reached < 3 && since >= c.length) {
                 reached = 3;
             }
+            // The run ends here when the next corner does not chain to this one.
+            const Curve* after = map.CurveAfter(c);
+            const bool endsRun = after == nullptr || after == &c || !after->follower;
             for (int phase = cue.phase + 1; phase <= reached; ++phase) {
-                mPendingLandmarks.push_back(kPhasePitch[phase]);
+                mPendingLandmarks.push_back(phase == kExitPhase && endsRun ? kRunEndPitch
+                                                                            : kLandmarkPitch);
                 mPendingRight.push_back(c.right);
                 RT_LOGF(RT_TAG_A11Y,
                         "curve beep phase=%d (1 entry, 2 apex, 3 exit): curve=%d arc=%.0f\n",
                         phase, static_cast<int>(i), static_cast<double>(arc));
-            }
-            // A run longer than one phrase: each corner past the phrase is named at its
-            // predecessor's apex - the driver is committed to this corner, the next is what to
-            // prepare for - so no corner of a run ever goes unnamed.
-            if (cue.phase < 2 && reached >= 2) {
-                const Curve* next = map.CurveAfter(c);
-                if (next != nullptr && next != &c) {
-                    const std::size_t k = static_cast<std::size_t>(next - curves.data());
-                    if (next->follower && !mCues[k].called) {
-                        mCues[k].called = true;
-                        const std::string phrase = CurvePhrase(*next);
-                        ScreenReader::Instance().Speak(phrase, /*interrupt=*/false);
-                        RT_LOGF(RT_TAG_A11Y, "curve call: \"%s\" curve=%d at the apex of %d\n",
-                                phrase.c_str(), static_cast<int>(k), static_cast<int>(i));
-                    }
-                }
             }
             cue.phase = reached;
         }
