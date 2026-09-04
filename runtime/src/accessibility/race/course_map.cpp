@@ -232,19 +232,6 @@ void CourseMap::ResampleUniform() {
     if (n < kMinStations) {
         return;
     }
-    std::vector<float> widths;
-    widths.reserve(static_cast<std::size_t>(n));
-    for (const Station& s : mPoints) {
-        if (s.halfWidth > 0.0f) {
-            widths.push_back(s.halfWidth);
-        }
-    }
-    if (widths.empty()) {
-        return;
-    }
-    std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
-    const float spacing = widths[widths.size() / 2];
-
     std::vector<float> arc(static_cast<std::size_t>(n) + 1, 0.0f);
     for (int i = 0; i < n; ++i) {
         const Station& a = mPoints[static_cast<std::size_t>(i)];
@@ -252,6 +239,25 @@ void CourseMap::ResampleUniform() {
         arc[static_cast<std::size_t>(i) + 1] = arc[static_cast<std::size_t>(i)] + Hypot2(b.x - a.x, b.z - a.z);
     }
     const float lap = arc.back();
+
+    // The spacing is the lap's median corridor half-width. A route authored with no corridor at
+    // all (11 of Retro Rewind's 341 tracks leave every ENPT range at 0) falls back to the route's
+    // own median segment length - still the course's scale, and the corners need no width.
+    std::vector<float> scale;
+    scale.reserve(static_cast<std::size_t>(n));
+    for (const Station& s : mPoints) {
+        if (s.halfWidth > 0.0f) {
+            scale.push_back(s.halfWidth);
+        }
+    }
+    if (scale.empty()) {
+        for (int i = 0; i < n; ++i) {
+            scale.push_back(arc[static_cast<std::size_t>(i) + 1] - arc[static_cast<std::size_t>(i)]);
+        }
+        RT_LOGF(RT_TAG_A11Y, "course map: no corridor widths, spacing from the route's segments\n");
+    }
+    std::nth_element(scale.begin(), scale.begin() + scale.size() / 2, scale.end());
+    const float spacing = scale[scale.size() / 2];
     if (!(spacing > 0.0f) || !(lap > 0.0f)) {
         return;
     }
