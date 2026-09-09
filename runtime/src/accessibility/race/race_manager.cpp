@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -12,6 +13,7 @@
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/engine_pan.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/item_announcer.h"
 #include "accessibility/race/item_beacon.h"
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/kart_volume.h"
@@ -30,6 +32,7 @@ DriveAssist g_driveAssist;
 TrackLimits g_trackLimits;
 RaceNarrator g_narrator;
 ItemBeacon g_itemBeacon;
+ItemAnnouncer g_itemAnnouncer;
 EnginePan g_enginePan;
 KartVolume g_kartVolume;
 RouletteVolume g_rouletteVolume;
@@ -106,6 +109,7 @@ void ForgetRace() {
     g_driveAssist.Reset();
     g_trackLimits.Reset();
     g_itemBeacon.Reset();
+    g_itemAnnouncer.Reset();
 }
 
 void ForgetCourse() {
@@ -158,7 +162,10 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
     if (--countdown > 0) {
         return;
     }
-    countdown = 60;
+    // Temporary 10 Hz trace resolves lateral movement through curves and collision recovery.
+    constexpr float kTelemetryPeriodSec = 0.1f;
+    countdown = state.frameSec > 0.0f
+        ? std::max(1, static_cast<int>(std::round(kTelemetryPeriodSec / state.frameSec))) : 1;
 
     const float arc = map.ArcOfPosition(state.x, state.z, station);
     // Both frames at the kart's own ARC, not at its checkpoint-mapped station. With 25 checkpoints
@@ -284,7 +291,7 @@ void Tick() {
     state.frameSec = 1.0f / GuestFramesPerSecond();
 
     // The real road edges, measured a couple of stations per tick until the course is covered,
-    // then the racing line placed inside them around the kart's own size.
+    // then the authored route repaired only where it falls outside the kart's safe margin.
     EdgeMap::Tick(g_map, state.valid ? state.bodyHalfWidth : 0.0f, state.frameSec);
     // Behind the pause menu the game advances no time, so neither may any cue timer.
     const float dtSec = state.paused ? 0.0f : stepSec;
@@ -304,7 +311,8 @@ void Tick() {
     g_prevValid = state.valid;
     g_prevFinished = state.finished;
 
-    // Once the edges are known the line becomes the racing line inside them (EdgeMap). Deferred to a moment where moving the line under the kart cannot teleport the guide: the kart
+    // Once the edges are known the unsafe route points are repaired (EdgeMap). Deferred to a
+    // moment where moving the line under the kart cannot teleport the guide: the kart
     // not driving, or a lap boundary, whichever comes first.
     // Only a READ lap counts: a failed read blanks `lap` to 0 and would fake a lap boundary.
     const bool lapChanged = state.valid && g_lastShiftLap >= 0 && state.lap != g_lastShiftLap;
@@ -335,8 +343,8 @@ void Tick() {
     // when there is a real line to steer along. Without the geometry the assist has nothing to aim
     // at and outputs a centred zero, and that zero would sit on the engine for the whole race,
     // destroying the camera-relative placement a sighted player hears.
-    const bool guiding = geometry && g_map.RouteBased() && g_handedness.Known() && state.driving &&
-                         RuntimeConfigFile::AccessibilitySteeringStrength() > 0;
+    const bool guiding =
+        geometry && g_map.RouteBased() && g_handedness.Known() && state.driving;
     g_enginePan.Apply(state, g_driveAssist.SteeringPan(), guiding);
     // Volume, unlike the pan, applies to every kart - the rivals' knob is the whole point.
     g_kartVolume.Tick(state);
@@ -345,6 +353,7 @@ void Tick() {
                  g_driveAssist.LastBearingDeg(), g_driveAssist.LastHorizonUnits());
     g_trackLimits.Tick(state, g_map, g_handedness, station, dtSec);
     g_itemBeacon.Tick(state, g_map, g_handedness, station, dtSec);
+    g_itemAnnouncer.Tick(state);
 
     // Speaks whether or not the course map read: lap and position come from the race record, not
     // from the geometry.

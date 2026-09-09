@@ -74,15 +74,11 @@ struct KclRoad {
     // Walks outwards along +/-(rightX, rightZ) until the floor stops being Road, then looks past
     // the edge to say what is actually there. Each side also stops at its own reach, because a
     // surface test alone cannot tell this stretch of road from a paved area joined to it - the
-    // caller supplies where its own stretch ends (CourseMap::LateralReach).
+    // caller supplies where its own stretch ends (CourseMap::LateralReach). With `offroadIsRoad`
+    // penalised ground counts as road too: the point stands on it, so it is the driven surface
+    // here (Toad's Factory's mud), and only a wall, a drop or nothing ends it.
     static KclEdges ProbeEdges(float x, float y, float z, float rightX, float rightZ,
-                               float leftReach, float rightReach);
-
-    // The signed lateral distance from this point to the nearest Road, searching both ways out to
-    // `limit`. Zero when the point already stands on road. False when no road is within the limit,
-    // which is the caller's cue to leave the point exactly where the course authored it.
-    static bool FindRoad(float x, float y, float z, float rightX, float rightZ, float limit,
-                         float& shiftOut);
+                               float leftReach, float rightReach, bool offroadIsRoad = false);
 
     // The vertical reach of an unanchored probe, which is also the drop that counts as a fall.
     static float ProbeReach();

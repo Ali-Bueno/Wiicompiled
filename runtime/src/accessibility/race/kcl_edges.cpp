@@ -56,7 +56,8 @@ int SamplesFor(float reach) {
 // Walks outwards one step at a time, carrying the last surface height forward so a sloped road is
 // followed rather than dropped. The distance reported is the last sample that was still road, so it
 // is a lower bound with the step as its resolution.
-KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samples) {
+KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samples,
+                     bool offroadIsRoad) {
     KclEdge edge;
     if (samples < 1) {
         return edge;  // no room to sweep: the side stays invalid rather than reporting a guess
@@ -80,7 +81,8 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
             edge.cause = KclSurface::None;
             break;
         }
-        if (floor.category != KclSurface::Road) {
+        if (floor.category != KclSurface::Road &&
+            !(offroadIsRoad && floor.category == KclSurface::Offroad)) {
             edge.cause = floor.category;
             break;
         }
@@ -132,43 +134,8 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
 
 float KclRoad::ProbeReach() { return kEdgeProbeReachUnits; }
 
-// Searched from the line outwards in both directions at once, nearest first, so a point that sits
-// just off the asphalt is pulled to the side it actually left. The vertical window is the probe
-// reach, which is already the definition of "further down than a shoulder the player can recover
-// from": road further from the line than that is another deck, not this one.
-bool KclRoad::FindRoad(float x, float y, float z, float rightX, float rightZ, float limit,
-                       float& shiftOut) {
-    shiftOut = 0.0f;
-    if (!Ready()) {
-        return false;
-    }
-    const float length = std::sqrt(rightX * rightX + rightZ * rightZ);
-    if (!(length > 0.0f) || !(limit > 0.0f)) {
-        return false;
-    }
-    const float dirX = rightX / length;
-    const float dirZ = rightZ / length;
-
-    if (ProbeFloorNear(x, z, y, kEdgeProbeReachUnits).category == KclSurface::Road) {
-        return true;  // already on the asphalt: the authored point stands
-    }
-    const int steps = static_cast<int>(limit / kKclLateralStepUnits);
-    for (int i = 1; i <= steps; ++i) {
-        const float distance = kKclLateralStepUnits * static_cast<float>(i);
-        for (const float sign : {1.0f, -1.0f}) {
-            const float px = x + dirX * distance * sign;
-            const float pz = z + dirZ * distance * sign;
-            if (ProbeFloorNear(px, pz, y, kEdgeProbeReachUnits).category == KclSurface::Road) {
-                shiftOut = distance * sign;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float rightZ,
-                             float leftReach, float rightReach) {
+                             float leftReach, float rightReach, bool offroadIsRoad) {
     KclEdges out;
     if (!Ready()) {
         return out;
@@ -185,8 +152,8 @@ KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float righ
     // point, then the sweep follows whatever that turned out to be.
     out.centre = ProbeFloorNear(x, z, y, kEdgeProbeReachUnits);
     const float referenceY = out.centre.hit ? out.centre.y : y;
-    out.right = KclSweepSide(x, referenceY, z, dirX, dirZ, SamplesFor(rightReach));
-    out.left = KclSweepSide(x, referenceY, z, -dirX, -dirZ, SamplesFor(leftReach));
+    out.right = KclSweepSide(x, referenceY, z, dirX, dirZ, SamplesFor(rightReach), offroadIsRoad);
+    out.left = KclSweepSide(x, referenceY, z, -dirX, -dirZ, SamplesFor(leftReach), offroadIsRoad);
     return out;
 }
 

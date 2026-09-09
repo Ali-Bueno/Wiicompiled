@@ -7,6 +7,7 @@
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/motion_prediction.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/race/track_limits.h"
 
@@ -67,14 +68,6 @@ constexpr float kEdgeOnEdgeOctave = 2.0f;
 // Leaving and returning are one short note each, on the beeps' own extremes.
 constexpr float kSurfaceChangeSec = 0.15f;
 
-// The yaw estimate is a difference of unit vectors, so what it has to reject is a single-frame
-// outlier; three samples is the shortest window that outvotes one.
-constexpr float kYawSmoothSamples = 3.0f;
-
-// Below this total turn the constant-yaw arc is its straight limit; in float, 1 - cos loses the
-// digits before the arc differs from the chord by a unit at any racing speed.
-constexpr float kStraightTurnRad = 1e-3f;
-
 constexpr float kDemoEdgeSec = 0.8f;  // demo: long enough to hear the held tone timbre clearly
 constexpr float kDemoEdgePan = 0.7f;  // demo: the danger side sounds to the right
 
@@ -89,23 +82,6 @@ float GradeForMargin(float margin, float onsetMargin) {
     return kEdgeOnset + (1.0f - margin / onsetMargin) * kEdgeUrgencySpan;
 }
 
-// Where the kart will be after `seconds` if it keeps its speed and its yaw rate: a circular arc,
-// or its straight limit. Speed carries the sign of travel, so reversing predicts behind.
-void FuturePosition(const RaceState& state, float rightX, float rightZ, float yawRate,
-                    float seconds, float& x, float& z) {
-    const float distance = state.speedPerSecond * seconds;
-    const float turn = yawRate * seconds;
-    float along = distance;
-    float side = 0.0f;
-    if (std::fabs(turn) >= kStraightTurnRad) {
-        const float radius = distance / turn;
-        along = radius * std::sin(turn);
-        side = radius * (1.0f - std::cos(turn));
-    }
-    x = state.x + state.forwardX * along + rightX * side;
-    z = state.z + state.forwardZ * along + rightZ * side;
-}
-
 // Margin from a lateral offset (signed to the track's right) to the edge on one side.
 float MarginToSide(float room, float lateral, bool right) {
     return room - (right ? lateral : -lateral);
@@ -117,22 +93,21 @@ float BeepIntervalSec(float nearness) {
 
 // The cue grade on the shared scale. The warning starts at the course's warning distance from the
 // edge (EdgeMap::WarningDistance, the same distance the line keeps from a wall or the grass), an
-// absolute distance as Forza grades it, so a line placed near a limit is exactly at the edge of
-// silence and any drift towards that limit is heard at once. Where the road on that side is
-// narrower than the warning distance the band is that side's own share (kEdgeOnsetRealFraction),
-// never the whole of it: the margin can never exceed the room, so a band as wide as the room
-// armed the cue at dead centre on every corridor narrower than the warning distance (Coconut
-// Mall, 2026-09-02). Never narrower than the kart's own body either - the line's clearance is
-// floored the same way (edge_map.cpp BuildBands).
-// Without a measured road the KMP corridor offset IS the grade, clamped to the same ceiling the
-// measured path saturates at, so a failed probe cannot hand the ramp a number from a different
-// scale.
-float EdgeMagnitude(float offset, bool haveReal, float realDistance, float bodyHalfWidth,
-                    float margin, float predictedMargin) {
+// absolute distance as Forza grades it. One kart half-width around the line stays quiet; the rest
+// of the available warning distance is audible. Without a measured road, the normalized KMP
+// corridor uses the shared onset fraction and the same prediction horizon.
+float EdgeMagnitude(float offset, float predictedOffset, bool haveReal, float realDistance,
+                    float bodyHalfWidth, float margin, float predictedMargin) {
+    // Keep one kart half-width around the line quiet. Outside it, use the whole available warning
+    // distance: halving realDistance here a second time left only 285 units to react on Moo Moo.
     const float onsetMargin = std::max(
-        std::min(EdgeMap::WarningDistance(), realDistance * kEdgeOnsetRealFraction), bodyHalfWidth);
+        std::min(EdgeMap::WarningDistance(), realDistance - bodyHalfWidth), bodyHalfWidth);
     if (!haveReal || !(onsetMargin > 0.0f)) {
-        return std::min(std::fabs(offset), kEdgeBeepCeiling);
+        // The KMP offset is normalized to its corridor. Start at the same half-corridor fraction
+        // used by the measured-road model, and retain the time lead when KCL has a gap.
+        const float fallback =
+            std::max(std::fabs(offset), std::fabs(predictedOffset)) / kEdgeOnsetRealFraction;
+        return std::min(fallback, kEdgeBeepCeiling);
     }
     // The predicted margin is what the grade rides, which is what makes the lead a TIME. The
     // positional grade stays as the floor, so a kart parked beside the edge still warns.
@@ -182,15 +157,8 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
 
     // Yaw from the heading the state already reads: that vector times the speed IS the velocity,
     // so this is the curvature of the path driven, not the chassis yaw a drift throws around.
-    if (mHaveLastForward && state.frameSec > 0.0f) {
-        const float yawAlpha = 1.0f - std::exp(-1.0f / kYawSmoothSamples);
-        const float sinTurn =
-            std::clamp(-(mLastForwardX * rightX + mLastForwardZ * rightZ), -1.0f, 1.0f);
-        mYawRate += (std::asin(sinTurn) / state.frameSec - mYawRate) * yawAlpha;
-    }
-    mLastForwardX = state.forwardX;
-    mLastForwardZ = state.forwardZ;
-    mHaveLastForward = true;
+    UpdateYawRate(state, rightX, rightZ, mYawRate, mLastForwardX, mLastForwardZ,
+                  mHaveLastForward);
 
     // WHICH edge is being approached is a question about the track, not about where the kart is
     // pointed, so it takes the route frame own sign while the ear above keeps the kart one. Read at
@@ -215,10 +183,11 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // is not turning enough - the margin the player reported losing without warning - and a line
     // running along a limit closes on the edge faster than the kart drifts.
     float predictedMargin = margin;
+    float predictedOffset = offset;
     if (haveOffset) {
         const float seconds = AnticipationSeconds();
         float fx = 0.0f, fz = 0.0f;
-        FuturePosition(state, rightX, rightZ, mYawRate, seconds, fx, fz);
+        PredictPosition(state, rightX, rightZ, mYawRate, seconds, fx, fz);
         const float ahead = arc + state.speedPerSecond * seconds;
         int aimStation = station;
         float t = 0.0f;
@@ -230,6 +199,7 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
         EdgeKind fKind = EdgeKind::Unknown;
         if (map.RoadOffsetAtArc(futureArc, fx, state.y, fz, fOffset, nullptr, nullptr,
                                 &fCorridor)) {
+            predictedOffset = fOffset;
             const float fLateral = fOffset * fCorridor;
             const bool fRight = fLateral > 0.0f;
             // Against the room the kart HAS, not the future station's: a step in the measured
@@ -329,7 +299,8 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // The positional grade is the floor; the prediction can only raise it, so moving away never
     // makes the warning louder (EdgeMagnitude takes the max).
     const float magnitude =
-        EdgeMagnitude(offset, haveReal, realDistance, state.bodyHalfWidth, margin, predictedMargin);
+        EdgeMagnitude(offset, predictedOffset, haveReal, realDistance, state.bodyHalfWidth, margin,
+                      predictedMargin);
 
     // The two grades agree on their thresholds but not on how fast they move through them, so a
     // switch between them re-arms the limiter and must not read as a surge.
@@ -401,10 +372,12 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // what the next lap log calibrates the anticipation horizon against.
     RT_LOGF(RT_TAG_A11Y,
             "edge beep: station=%d kind=%s real=%.0f lateral=%.0f margin=%.0f predicted=%.0f "
+            "offset=%.2f future=%.2f "
             "grade=%.2f nearness=%.2f side=%s measured=%s\n",
             station, EdgeKindName(mNearEdgeKind), static_cast<double>(realDistance),
             static_cast<double>(lateralUnits), static_cast<double>(margin),
-            static_cast<double>(predictedMargin), static_cast<double>(magnitude),
+            static_cast<double>(predictedMargin), static_cast<double>(offset),
+            static_cast<double>(predictedOffset), static_cast<double>(magnitude),
             static_cast<double>(nearness), panRight ? "right" : "left",
             towardsRight ? "right" : "left");
 }

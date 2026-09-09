@@ -66,8 +66,6 @@ void ConfigReloadTick() {
     };
     const bool lineWasItem = RuntimeConfigFile::AccessibilityLineFromItemRoute();
     apply(live.accessibilityInvertSteeringPan, fresh.accessibilityInvertSteeringPan);
-    apply(live.accessibilitySteeringStrength, fresh.accessibilitySteeringStrength);
-    apply(live.accessibilitySteeringLookAhead, fresh.accessibilitySteeringLookAhead);
     apply(live.accessibilityEdgeCues, fresh.accessibilityEdgeCues);
     apply(live.accessibilityLineSource, fresh.accessibilityLineSource);
     apply(live.accessibilityKartVolume, fresh.accessibilityKartVolume);

@@ -65,8 +65,6 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_kart_volume", "my kart volume"},
     {"opt_rival_volume", "rival karts volume"},
     {"opt_roulette_volume", "item roulette volume"},
-    {"opt_steering_strength", "steering guide strength"},
-    {"opt_look_ahead", "anticipation"},
     {"opt_invert_pan", "invert steering pan"},
     {"opt_edge_cues", "edge cues"},
     {"demo_edge", "hear the edge tone"},
@@ -87,13 +85,6 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_roulette_volume_help",
      "The item roulette spin and the jingle when your item is decided. Menu clicks are left "
      "alone."},
-    {"opt_steering_strength_help",
-     "How hard the engine pans when the kart points away from the racing line. This is the main "
-     "part of the guide: raise it for a wider, more obvious swing, lower it for a subtler one."},
-    {"opt_look_ahead_help",
-     "How far ahead in time the mod looks, from a tenth of a second up to about eight "
-     "tenths. Raise it to be warned of corners and of the road edge earlier, lower it to "
-     "follow what is happening right now."},
     {"opt_invert_pan_help",
      "Off, the engine sounds toward the side you must steer away from. On flips it, so you steer "
      "toward the sound."},
@@ -118,6 +109,27 @@ constexpr Phrase kEnglishDefaults[] = {
     {"stat_offroad", "off road"},
     {"stat_miniturbo", "mini turbo"},
     {"stat_value", "{name} {n}"},
+
+    // Spoken when the item roulette settles. Keyed by the game's item id in item_inventory.cpp.
+    {"item_green_shell", "green shell"},
+    {"item_red_shell", "red shell"},
+    {"item_banana", "banana"},
+    {"item_fake_item_box", "fake item box"},
+    {"item_mushroom", "mushroom"},
+    {"item_triple_mushrooms", "triple mushrooms"},
+    {"item_bob_omb", "bob-omb"},
+    {"item_spiny_shell", "blue shell"},
+    {"item_lightning", "lightning"},
+    {"item_star", "star"},
+    {"item_golden_mushroom", "golden mushroom"},
+    {"item_mega_mushroom", "mega mushroom"},
+    {"item_blooper", "blooper"},
+    {"item_pow_block", "pow block"},
+    {"item_thunder_cloud", "thunder cloud"},
+    {"item_bullet_bill", "bullet bill"},
+    {"item_triple_green_shells", "triple green shells"},
+    {"item_triple_red_shells", "triple red shells"},
+    {"item_triple_bananas", "triple bananas"},
 
     {"value_on", "on"},
     {"value_off", "off"},

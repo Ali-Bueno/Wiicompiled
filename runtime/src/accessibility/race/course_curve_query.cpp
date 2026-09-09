@@ -1,5 +1,6 @@
 #include "accessibility/race/course_map.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -17,7 +18,7 @@ constexpr float kSeamEpsilonUnits = 1.0f;
 
 void CourseMap::RefreshCurveArcs() {
     // A landmark is a station plus a fraction of the segment leaving it, so it stays the same
-    // place on the road however far the racing line has moved the stations sideways.
+    // place on the road however far the safe-line repair moved the stations sideways.
     auto arcAtPos = [this](float pos) {
         const int station = static_cast<int>(std::floor(pos));
         const float t = pos - static_cast<float>(station);
@@ -33,6 +34,7 @@ void CourseMap::RefreshCurveArcs() {
         // Long when the corner is at least a straight long: it outlasts its own countdown at
         // the reference speed, so the call says so.
         curve.isLong = curve.length >= kStraightUnits;
+        GradeCurve(curve);
     }
     // Runs: a corner closer than a straight to the one before it rides in that one's run. A lap
     // of nothing but corners still needs one leader, the corner after the widest gap.
@@ -41,7 +43,7 @@ void CourseMap::RefreshCurveArcs() {
     float widestGap = -1.0f;
     for (std::size_t i = 0; i < count; ++i) {
         const Curve& prev = mCurves[(i + count - 1) % count];
-        float gap = count > 1 ? GapAfter(prev, mCurves[i]) : mLapLength;
+        float gap = GapAfter(prev, mCurves[i]);
         if (gap > mLapLength - kSeamEpsilonUnits) {
             gap = 0.0f;  // touching corners, not a lap-long straight
         }
@@ -88,12 +90,12 @@ const Curve* CourseMap::CurveContaining(float arc) const {
 const Curve* CourseMap::CurveAfter(const Curve& from) const {
     const Curve* best = nullptr;
     float bestAhead = 0.0f;
-    const float exit = CurveExit(from);
+    const float entry = from.entry;
     for (const Curve& curve : mCurves) {
         if (&curve == &from) {
             continue;
         }
-        const float ahead = ArcBetween(exit, curve.entry);
+        const float ahead = ArcBetween(entry, curve.entry);
         if (best == nullptr || ahead < bestAhead) {
             best = &curve;
             bestAhead = ahead;
@@ -109,7 +111,7 @@ const Curve* CourseMap::CurveBefore(const Curve& from) const {
         if (&curve == &from) {
             continue;
         }
-        const float behind = ArcBetween(CurveExit(curve), from.entry);
+        const float behind = ArcBetween(curve.entry, from.entry);
         if (best == nullptr || behind < bestBehind) {
             best = &curve;
             bestBehind = behind;
@@ -119,7 +121,8 @@ const Curve* CourseMap::CurveBefore(const Curve& from) const {
 }
 
 float CourseMap::GapAfter(const Curve& from, const Curve& next) const {
-    return ArcBetween(CurveExit(from), next.entry);
+    const float entryDistance = &from == &next ? mLapLength : ArcBetween(from.entry, next.entry);
+    return std::max(0.0f, entryDistance - from.length);
 }
 
 }  // namespace a11y::race

@@ -49,11 +49,25 @@ struct VertexRun {
 
 }  // namespace
 
-// Corners exactly as the game's CPU drivers see them: a signed turn angle at every AUTHORED route
-// vertex, runs of vertices turning the same way, and the drift-approach distance both bounding a
-// run and joining two runs the driver would never straighten between. The alternative - grading a
-// smoothed curvature on the resampled grid - graded the same bend differently per course, because
-// the smoothing window was that course's corridor width (312-1211 units).
+void CourseMap::GradeCurve(Curve& curve) const {
+    const float radians = curve.totalDegrees / kRadToDeg;
+    curve.radius = radians > 0.0f
+                       ? std::max(curve.length / radians, curve.corridorRadius)
+                       : std::numeric_limits<float>::max();
+    if (curve.radius < kRadiusHard) {
+        curve.severity = curve.totalDegrees >= kHairpinDegrees ? TurnSeverity::Hairpin
+                                                               : TurnSeverity::Hard;
+    } else if (curve.radius < kRadiusNormal) {
+        curve.severity = TurnSeverity::Normal;
+    } else {
+        curve.severity = TurnSeverity::Easy;
+    }
+}
+
+// Corner candidates use the game's authored route: a signed turn at every vertex, same-side runs
+// and the CPU's drift-approach distance. The radius filter then keeps the changes that require a
+// meaningful steering action. Grading a smoothed resampled grid made the same bend change grade by
+// course because its smoothing window was that course's corridor width (312-1211 units).
 void CourseMap::BuildCurves() {
     mCurves.clear();
     ++mCurveGeneration;
@@ -106,10 +120,11 @@ void CourseMap::BuildCurves() {
         const float angle = std::acos(std::clamp(ax * bx + az * bz, -1.0f, 1.0f));
         const float side = bx * rightX + bz * rightZ;
         turn[static_cast<std::size_t>(k)] = side > 0.0f ? angle : -angle;
-        // A vertex needing less than a quarter of the stick is a straight one, whatever it says.
+        // The game's threshold makes a vertex a candidate even on sparse routes. The radius test
+        // also keeps a gradual bend made from several individually smaller turns.
         const float localRadius =
             angle > 0.0f ? 0.5f * (aLen + bLen) / angle : std::numeric_limits<float>::max();
-        if (localRadius < kRadiusEnter) {
+        if (angle >= kTurnCornerRad || localRadius < kRadiusEnter) {
             sign[static_cast<std::size_t>(k)] = side > 0.0f ? 1 : -1;
         }
     }
@@ -133,7 +148,9 @@ void CourseMap::BuildCurves() {
             runs.push_back(open);
             isOpen = false;
         }
-        if (sign[u] == 0 && !forced) {
+        // Force-drift is an AI tactic, not proof that the road turns, so it never creates a
+        // directional call on a straight by itself.
+        if (sign[u] == 0) {
             if (isOpen) {
                 runs.push_back(open);
                 isOpen = false;
@@ -184,7 +201,7 @@ void CourseMap::BuildCurves() {
 
     for (const VertexRun& r : merged) {
         const float total = std::fabs(r.total);
-        if (total < kTurnCornerRad && !r.forced) {
+        if (total < kTurnCornerRad) {
             continue;
         }
         // The bend reaches back into the segment before its first vertex and on into the one after
@@ -200,7 +217,7 @@ void CourseMap::BuildCurves() {
 
         // The corridor absorbs part of a bend: a turn of angle theta made inside a band of
         // half-width w can be driven at a radius up to w*cos(theta/2)/(1-cos(theta/2)), one
-        // half-width being the lateral room the racing line actually uses. The band is the game's
+        // half-width being the lateral room the safe line actually uses. The band is the game's
         // own CPU corridor, taken at the run's median vertex so one wide point cannot flatten it.
         std::vector<float> widths;
         for (int k = r.first, guard = 0; guard <= nv; ++guard) {
@@ -216,7 +233,7 @@ void CourseMap::BuildCurves() {
         const float absorbed = cosHalf < 1.0f ? halfWidth * cosHalf / (1.0f - cosHalf)
                                               : std::numeric_limits<float>::max();
         const float radius = std::max(length / total, absorbed);
-        if (radius >= kRadiusEnter && !r.forced) {
+        if (radius >= kRadiusEnter) {
             continue;
         }
 
@@ -240,15 +257,9 @@ void CourseMap::BuildCurves() {
         curve.apexPos = arcAt(apexVertex) / mVertexArcStep;
         curve.exitPos = exitArc / mVertexArcStep;
         curve.right = r.sign > 0;
-        if (radius < kRadiusHard) {
-            curve.severity =
-                degrees >= kHairpinDegrees ? TurnSeverity::Hairpin : TurnSeverity::Hard;
-        } else if (radius < kRadiusNormal) {
-            curve.severity = TurnSeverity::Normal;
-        }
         curve.totalDegrees = degrees;
-        curve.radius = radius;
-        curve.driftPoint = r.peak >= kTurnCornerRad || r.forced;
+        curve.corridorRadius = absorbed;
+        curve.driftPoint = r.peak >= kTurnCornerRad;
         curve.forced = r.forced;
         mCurves.push_back(curve);
     }

@@ -19,12 +19,11 @@ enum class EdgeKind : std::uint8_t {
 
 const char* EdgeKindName(EdgeKind kind);
 
-// The warning distance, as a share of the course's real half-width: the track-limit cue starts
-// this far from an edge, and the line is placed no closer to a wall or the grass than this, so
-// "on the line" is always just outside the warning and any drift towards the edge is heard at
-// once. One number for both, because the first racing line placed with only the kart's own
-// half-width as clearance put "on the line" and "on the grass" 103 units apart (2026-09-02). A
-// DROP keeps this share of its own local half-width clear as well, whichever is larger.
+// The warning distance, as a share of the course's real half-width. The line is placed no closer
+// to a wall or the grass than this, and the cue uses up to this distance while reserving one kart
+// half-width around the line as silence. One number anchors both because the first safe line
+// placed with only the kart's own clearance put "on the line" 103 units from grass (2026-09-02).
+// A drop keeps this share of its own local half-width clear as well, whichever is larger.
 inline constexpr float kEdgeOnsetRealFraction = 0.5f;
 
 // The real road at one station, in world units either side of the line. The two sides are valid
@@ -84,7 +83,7 @@ struct EdgeMap {
 
     static bool Ready();
 
-    // The per-station shift towards the track's right that places the racing line inside the real
+    // The per-station shift towards the track's right that keeps the safe line inside the real
     // road, in world units and in station order. Empty until the line is placed. The course map applies it
     // to its own geometry AND to the route it measures the lateral offset against, because those
     // two must stay one line: aiming at one while grading position against the other is the bug

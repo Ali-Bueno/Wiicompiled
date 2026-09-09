@@ -135,25 +135,6 @@ void SettingsMenu::BuildOptions() {
          },
          nullptr});
 
-    // The steering knobs already hot-apply through Mutable(): the assist re-reads them per frame.
-    mOptions.push_back({"opt_steering_strength",
-                        [] {
-                            return std::to_string(RuntimeConfigFile::AccessibilitySteeringStrength());
-                        },
-                        [](int dir) {
-                            RuntimeConfigFile::SetAccessibilitySteeringStrength(StepKnob(
-                                RuntimeConfigFile::AccessibilitySteeringStrength(), dir));
-                        },
-                        nullptr});
-    mOptions.push_back(
-        {"opt_look_ahead",
-         [] { return std::to_string(RuntimeConfigFile::AccessibilitySteeringLookAhead()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilitySteeringLookAhead(
-                 StepKnob(RuntimeConfigFile::AccessibilitySteeringLookAhead(), dir));
-         },
-         nullptr});
-
     const auto toggleInvert = [] {
         RuntimeConfigFile::SetAccessibilityInvertSteeringPan(
             !RuntimeConfigFile::AccessibilityInvertSteeringPan());

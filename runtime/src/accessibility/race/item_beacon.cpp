@@ -8,6 +8,7 @@
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/item_inventory.h"
 #include "accessibility/race/race_state.h"
 
 namespace a11y::race {
@@ -38,21 +39,6 @@ constexpr std::uint32_t kItemboxActive = 1;
 constexpr std::uint32_t kVtableIsActiveSlot = 0xEC;
 constexpr std::uint32_t kItemboxIsActiveAddr = 0x806C69C0;  // Objects::Itembox::IsActive
 
-// Item::Manager::CreateInstance (0x80799138) stores the instance here.
-constexpr std::uint32_t kItemManagerPtr = 0x809C3618;
-constexpr std::uint32_t kItemPlayerArray = 0x14;
-constexpr std::uint32_t kItemPlayerStride = 584;
-constexpr std::uint32_t kItemPlayerCountPtr = 0x809C38B8;  // u8
-constexpr std::uint32_t kItemPlayerHeldItem = 0x8C;
-
-// Item::Player::DecideItem only rolls a new item when the held type reads as this, which is what
-// makes it the empty-handed value.
-constexpr std::uint32_t kItemNone = 20;
-
-// Racedata::GetPlayerIdOfLocalPlayer, the same chain the race record uses.
-constexpr std::uint32_t kRacedataPtr = 0x809BD728;
-constexpr std::uint32_t kRacedataLocalToPlayer = 0xB84;
-
 // How far ahead a box is still worth mentioning: the spoken lead at the current speed, the same
 // reaction budget every other anticipating cue gets, floored at one road width when stopped.
 constexpr float kBeaconRangeSec = kSpokenLeadSec;
@@ -71,32 +57,11 @@ constexpr float kBeaconLeanPeak = 0.5f;  // sin(pi/4) * cos(pi/4), the peak of t
 // the player hears rather than something that just stops.
 constexpr float kBeaconPassedPitch = 0.7f;
 
-// Reads whether the local player is already holding something. Failing to read it is treated as
+// Whether the local player is already holding something. Failing to read it is treated as
 // empty-handed: a beacon that plays when it should not is a smaller harm than one that never plays.
 bool HoldingItem() {
-    std::uint32_t racedata = 0;
-    std::uint32_t manager = 0;
-    std::uint8_t rawId = 0;
-    std::uint8_t players = 0;
-    if (!TryPointer(kRacedataPtr, racedata) || !TryPointer(kItemManagerPtr, manager) ||
-        !TryU8(racedata + kRacedataLocalToPlayer, rawId) ||
-        !TryU8(kItemPlayerCountPtr, players)) {
-        return false;
-    }
-    const int id = static_cast<std::int8_t>(rawId);
-    if (id < 0 || id >= static_cast<int>(players)) {
-        return false;
-    }
-
-    std::uint32_t array = 0;
-    std::uint32_t held = 0;
-    if (!TryPointer(manager + kItemPlayerArray, array) ||
-        !Memory::TryRead32(array + static_cast<std::uint32_t>(id) * kItemPlayerStride +
-                               kItemPlayerHeldItem,
-                           held)) {
-        return false;
-    }
-    return held != kItemNone;
+    std::uint32_t held = kItemNone;
+    return TryReadHeldItem(held) && held != kItemNone;
 }
 
 bool IsCollectableItembox(std::uint32_t object) {

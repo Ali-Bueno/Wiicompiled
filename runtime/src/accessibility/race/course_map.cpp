@@ -677,8 +677,8 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     }
     mRoadShifted = true;  // one attempt per course, successful or not
 
-    // Applied exactly as solved: the racing line is already the smoothest line its bands allow,
-    // and any averaging here would only bend it back towards the authored route.
+    // Applied exactly as repaired: the bounds already make every necessary move gradual, and any
+    // averaging here could push a station back outside its measured safe band.
     int moved = 0;
     for (int i = 0; i < n; ++i) {
         if (shifts[i] != 0.0f) {
@@ -710,9 +710,8 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     // Arcs descend from the positions, so they are rebuilt and the corners' landmarks re-read
     // from them. The corners themselves, the vertices they came from, the right-hand sign and
     // the checkpoint mapping are NOT: the corners describe the road, and the sign is the mod's
-    // one direction convention. (A racing line that crosses the road between two corners bends
-    // in an S there; counting that S as corners and reverting the whole line on it kept every
-    // course with such a crossing on the CPU's route until 2026-09-03.)
+    // one direction convention. (A repaired line can bend between two authored corners; counting
+    // that bend as a new corner would make collision geometry rewrite the game's corner calls.)
     // The corner list is the same list, so the generation stays: a shift landing on a lap
     // boundary must not un-say what was said about the corners ahead.
     BuildDerived();
@@ -721,9 +720,10 @@ bool CourseMap::ApplyRoadShift(const std::vector<float>& shifts) {
     // The placement stuck: the edge map rebases its distances onto the line the stations now have.
     EdgeMap::ConfirmShift(true);
     RT_LOGF(RT_TAG_A11Y,
-            "course map: racing line placed, %d of %d stations moved, largest %.0f, "
+            "course map: safe line repaired, %d of %d stations moved, largest %.0f, "
             "lap %.0f\n",
             moved, n, static_cast<double>(worst), static_cast<double>(mLapLength));
+    LogCurveMap();
     return true;
 }
 

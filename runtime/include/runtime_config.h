@@ -49,8 +49,6 @@ struct RuntimeUserConfig {
     std::optional<bool> audioMuted;
     std::optional<bool> accessibilityInvertSteeringPan;
     std::optional<bool> accessibilityEdgeCues;
-    std::optional<int32_t> accessibilitySteeringStrength;
-    std::optional<int32_t> accessibilitySteeringLookAhead;
     std::optional<std::string> accessibilityLineSource;
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
@@ -279,12 +277,7 @@ inline void EnsureConfigFile() {
               "# section applies while the game is running: save the file and the mod says\n"
               "# \"settings reloaded\" a couple of seconds later.\n"
               "# The steering guide pans the game's own engine note towards the side to steer\n"
-              "# AWAY from. Both knobs are 0-100.\n"
-              "steering_strength = 40\n"
-              "# The one anticipation knob: how far ahead in TIME the mod looks, 0.10 s at 0 up to\n"
-              "# 0.79 s at 100, the same lead for every engine class. It moves the steering\n"
-              "# guide's horizon and the edge cue's margin together.\n"
-              "steering_look_ahead = 100\n"
+              "# AWAY from. Its reaction time and pan response adapt to the kart's real speed.\n"
               "invert_steering_pan = false\n"
               "# Which line the guide follows: \"cpu\" (the CPU drivers' route - the default,\n"
               "# and the one every play-test of the guide has run on) or \"item\" (the route red\n"
@@ -430,10 +423,6 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "accessibility", "invert_steering_pan");
     config.accessibilityEdgeCues =
         FindConfigValue<bool>(document, "accessibility", "edge_cues");
-    config.accessibilitySteeringStrength =
-        FindConfigInt(document, "accessibility", "steering_strength");
-    config.accessibilitySteeringLookAhead =
-        FindConfigInt(document, "accessibility", "steering_look_ahead");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
@@ -706,18 +695,6 @@ inline bool SetAccessibilityInvertSteeringPan(bool value) {
     return WriteSetting("accessibility", "invert_steering_pan", value ? "true" : "false");
 }
 
-inline bool SetAccessibilitySteeringStrength(int32_t value) {
-    const int32_t clamped = std::clamp(value, 0, 100);
-    Mutable().accessibilitySteeringStrength = clamped;
-    return WriteSetting("accessibility", "steering_strength", std::to_string(clamped));
-}
-
-inline bool SetAccessibilitySteeringLookAhead(int32_t value) {
-    const int32_t clamped = std::clamp(value, 0, 100);
-    Mutable().accessibilitySteeringLookAhead = clamped;
-    return WriteSetting("accessibility", "steering_look_ahead", std::to_string(clamped));
-}
-
 inline bool SetAccessibilityEdgeCues(bool value) {
     Mutable().accessibilityEdgeCues = value;
     return WriteSetting("accessibility", "edge_cues", value ? "true" : "false");
@@ -819,20 +796,6 @@ inline bool AccessibilityEdgeCues(bool fallback = true) {
 // setting for the other meaning, never the audio constant.
 inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
     return Get().accessibilityInvertSteeringPan.value_or(fallback);
-}
-
-// The two knobs that decide how the steering guide feels. Both 0-100, both clamped, because the
-// right values are a matter of ear and of how fast the player drives - not something that can be
-// settled from the game's code. Defaults are the play-tested config (STATUS.md, 2026-08-31).
-inline int32_t AccessibilitySteeringStrength(int32_t fallback = 40) {
-    return std::clamp(Get().accessibilitySteeringStrength.value_or(fallback), 0, 100);
-}
-
-// The one anticipation knob: seconds of lead, 0.10 s at 0 up to 0.79 s at 100, the same for
-// every engine class. It sets both the steering guide's horizon and the edge cue's margin, so all
-// the warning moves in step.
-inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 100) {
-    return std::clamp(Get().accessibilitySteeringLookAhead.value_or(fallback), 0, 100);
 }
 
 // Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill

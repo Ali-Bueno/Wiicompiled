@@ -1,205 +1,171 @@
+# Mario Kart Wii Accessibility
 
-# WiiCompiled
+An accessibility mod for Mario Kart Wii on PC.
 
-A native PC port of Mario Kart Wii, made with static recompilation.
+It's a fork of [WiiCompiled](https://github.com/patchzyy/Wiicompiled), a native PC port of the
+game made by static recompilation, with menu narration and a set of audio driving aids compiled
+in. The game itself is untouched: same physics, same items, same CPU, same everything. The mod
+only adds sound and speech on top; it never changes how the game plays.
 
-There's no emulator in the loop, no interpreter, no JIT, no PowerPC
-anywhere at runtime.
+Speech goes through [PRISM](https://github.com/ethindp/prism), so NVDA, JAWS and SAPI all work
+without any extra setup. With none of them running the game still runs, it just stays quiet.
 
-> [!IMPORTANT]
-> There is no Nintendo code, no assets and no game data anywhere in this project or its releases.
-> You need your own legally dumped copy of the PAL version of the game. Setup only ships the
-> toolchain, the translation runs on your machine against your disc image, and nothing ever gets
-> uploaded.
+> **You need a controller.** The game does not work with the keyboard. Any pad that Windows sees
+> as a gamepad is fine (Xbox, PlayStation, generic). Keyboard keys are only used for a couple of
+> mod shortcuts, not for driving.
 
-[What is a github, I just want to play](https://github.com/TeamWheelWizard/WheelWizard/releases/latest)
+> No Nintendo code or data is in this repository or in the installer. You need your own dump of
+> the European (PAL) disc, game id `RMCP01`. The game is compiled on your machine from that disc,
+> which is also why installing takes a while.
 
----
+## What you get
 
-## What it does
+**Menus.** Every screen reads itself: the screen's title and text when you arrive, then whatever
+the cursor is on, then its description. Moving the cursor reads the new item. Dialogs read too.
+On the character and vehicle screens the weight class and the seven stat bars (speed, weight,
+acceleration, handling, drift, off-road, mini-turbo) are spoken, because in the original they are
+just pictures.
 
-**Unlocked framerate with interpolation.** 
-The original game is hard-locked to 60 fps. The runtime can generate interpolated frames in between, so on a
-120/144 Hz monitor things genuinely look smoother.
+**Driving.** This is the part that took the longest to get right, and it works differently from
+what you might expect.
 
-> [!WARNING]
-> Interpolation is experimental right now and will show artifacts in specific scenarios.
+- The steering guide lives in your own engine sound. The engine leans to the side you need to get
+  away from, following the racing line a bit ahead of the kart, so you steer away from the sound
+  and back to centre. A left-hand bend puts the engine on your right. Centred engine means you're
+  on the line. There is no extra tone for this. A bend is heard as a steady lean, not as something
+  to chase.
+- Corners are called out ahead of time: "left", "hard right", "hairpin left long", and two corners
+  in a row come as "right then left". Before each corner three beeps count down into it, rising in
+  pitch, then a beep at the entry, one at the apex and a higher one at the exit.
+- Near the edge of the road you hear beeps that get quicker the closer you are, on the side of the
+  danger. Off the road they turn into a held tone until you're back on. "Off road", "on road" and
+  "wrong way" are spoken as well, and those stay on even if you turn the edge tones off.
+- While your hands are empty a short blip points at the nearest item box you can still take. It
+  drops in pitch once the box is behind you. It goes quiet as soon as you're holding something.
+- When the item roulette stops, the item is named: "red shell", "triple mushrooms", "bullet
+  bill" and so on. Using it or losing it isn't announced, the game's own sounds cover that.
+- Laps and positions are spoken when they change ("lap 2 of 3", "4th"), and "finished 2nd" at the
+  end.
 
-**Any aspect ratio you want.** 
-Drag the window bigger, wider, whatever, the camera adjusts
-live.
+**Volume.** Your own kart can be turned up past the original (up to 200 percent) so the steering
+lean stays easy to hear, the rival karts can be turned down so the pack stops covering your
+engine, and the item roulette has its own volume. Music and master volume are there too.
 
-**Native rendering via aurora.** 
-The graphics layer is built on
-[aurora](https://github.com/encounter/aurora). Aurora is a source-level GameCube & Wii compatibility layer.
+**Languages.** The mod speaks English, German, French, Spanish and Italian, following the language
+you pick for the game. The phrases are plain text files you can edit (see below).
 
-**High internal resolution.** 
-Play at several times the console's resolution.
-
-**Music ducking.** 
-Start playing something else, Spotify, a YouTube video, and
-the game automatically mutes its own music until the other audio stops. Optional, if you'd
-rather it didn't. All audio that shows in your display media controls on your windows pc fall under this.
-
-**An in-game settings bar.** 
-Press **F10** while the game window has focus:
-- Internal resolution
-- FPS counter
-- Controller assignment for all four ports
-- Full per-controller button mapping
-- Volume, instant mute, and the music ducking toggle
-
-Everything you change is saved to `Config.toml` on the spot and restored next launch.
-
-**Real controller support.** 
-Controllers are fed to the game as a GameCube controller.
-The port does NOT pretend to be a Wii Remote or Classic Controller.
-Mappings are positional (`south`, `east`, `west`, `north`) rather than Xbox-labelled, so the
-same config makes sense on Xbox, PlayStation, Nintendo and generic SDL pads alike, and extra
-inputs like paddles, touchpads and share buttons show up when the hardware reports them.
-
-## Requirements
-
-- Windows 10 or 11, 64-bit
-- GPU: GTX 1650 / RX 6400 / Arc A310 or higher
-- CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
-- About 20 GB of free disk space during installation
-- A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
-  GCZ, CISO, WBFS, WIA and RVZ are accepted.
-
-> [!NOTE]
-> GPU/CPU minimums are set by driver support and D3D12/Vulkan feature requirements, not by the game's actual demands.
-
-Only the clean PAL revision will work. Anything else (other
-regions, patched executables) is rejected outright.
-
-> [!NOTE]
-> Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
-> game files won't be provided or tolerated.
+**Retro Rewind.** The installer can also build a second executable with Retro Rewind's custom
+tracks and its online play (Retro-WFC). The accessibility code is compiled into both.
 
 ## Installing
 
-For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`
-image under Settings, turn on **WiiCompiled (beta)**, and hit install from the Home page.
-Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
-launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
+1. Download the installer. This link always gives you the latest version:
+   https://github.com/Ali-Bueno/Wiicompiled/releases/latest/download/MKWiiAccessibilityInstaller.exe
+   It's about 300 MB because it carries the whole compiler toolchain. Older versions are on the
+   [releases page](https://github.com/Ali-Bueno/Wiicompiled/releases).
+2. Have your disc image ready. Accepted formats: `iso`, `gcm`, `gcz`, `ciso`, `wbfs`, `wia`, `rvz`.
+   It has to be the PAL release.
+3. Run the installer. It asks for four things: where to install (the default `C:\MKWiiAccess` is
+   a good choice, the build does not like long or non-ASCII paths), the disc image, the language
+   for the game and the speech, and whether you want Retro Rewind. The installer is a plain
+   Windows program, nothing fancy, so it's accessible on its own.
+4. Press Install and go do something else. Twenty minutes on a fast machine, well over an hour
+   on a slow one. It needs about 21 GB free while it works (27 with Retro Rewind); most of that is
+   released when it's done.
 
-> [!CAUTION]
-> Only take builds from this repository's
-> [Releases](https://github.com/patchzyy/Wiicompiled/releases) page. If someone's sharing an
-> installer through Discord or some random download site, don't touch it!!
+When it finishes you get shortcuts on the Desktop and in the Start menu called
+"Mario Kart Wii Accessibility" and, if you asked for it, "Mario Kart Wii Accessibility (Retro
+Rewind)". Everything the install writes stays inside the install folder, so deleting that folder
+removes the whole thing apart from the shortcuts.
 
-## A note on related projects
+If you said no to Retro Rewind and change your mind, run the installer again, point it at the
+same folder and press "Add Retro Rewind".
 
-WiiCompiled, Wheel Wizard, Retro rewind and other related projects are developed
-**independently** and each has its **own** contribution rules and all have their own
-rules. What applies here does not automatically apply there,
-and vice versa. Check each project's own CONTRIBUTING and README files.
+If something fails, the installer says so and the full log is in `installer-log.txt` in the
+install folder. Fixing the cause and pressing Install again continues from where it stopped.
 
-## Retro Rewind
+## The settings menu
 
-[Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind), ZPL's Mario Kart Wii mod distribution,
-can be built as its **own static profile**: instead of applying `Code.pul` as runtime patches,
-the Kamek/Pulsar code is statically translated together with the base game into a separate native
-executable.
+From any game menu (not during a race), click both sticks at once (L3+R3) or press F8 on the
+keyboard. The menu is spoken. Up and down move between rows, left and right change a value in
+steps of 5, A activates, B closes. Every row reads its name, its value and a short explanation of
+what it does.
 
-Wheel Wizard drives this too.
+Rows, in order:
+
+1. master volume
+2. music volume
+3. my kart volume (0 to 200)
+4. rival karts volume
+5. item roulette volume
+6. invert steering pan
+7. edge cues (on/off)
+8. hear the edge tone
+9. hear a curve beep
+10. hear the item box
+
+The last three just play the sound so you know what to listen for.
+
+About "invert steering pan": by default the engine sounds on the side you must steer *away*
+from. Some people would rather drive toward the sound, like following a guide. Turning this on
+flips it, and that's all it does.
+
+## Changing things by hand
+
+Everything the menu changes is also in `UserData\Config.toml` inside the install folder. The
+game re-reads the `[accessibility]` section every couple of seconds while it runs and says
+"settings reloaded" when it picks up a change, so you can edit it with the game open.
+
+```toml
+[system]
+# 1 English, 2 German, 3 French, 4 Spanish, 5 Italian. Changes the game's text and the mod's speech.
+language = 4
+
+[accessibility]
+invert_steering_pan = false
+edge_cues = true
+# "cpu" follows the line the CPU karts drive; "item" follows the item route instead.
+line_source = "cpu"
+kart_volume = 180
+rival_kart_volume = 20
+item_roulette_volume = 100
+```
+
+The language is the one thing the settings menu doesn't offer. The installer sets it, and after
+that it's this file.
+
+Careful with the syntax: a broken `Config.toml` makes the game fall back to defaults for the
+whole file, including the path to the disc data, and it won't start. The installer keeps a
+`Config.toml.bak` next to it for that reason.
+
+**Phrases.** Next to the game executable there's an `accessibility_lang` folder with one file per
+language (`en.ini`, `es.ini`, ...). They are `key = text` lines in UTF-8. Change any phrase you
+like; a missing key or file falls back to the built-in English.
+
+**Sounds.** The `accessibility_sounds` folder holds the item box blip as `item_box.wav`. If the
+file is missing the mod uses a synthesised tone instead, so you can swap in your own.
+
+## What the mod does not do
+
+It doesn't steer, brake or slow you down, and it doesn't touch item odds, CPU difficulty or
+timers. Everything it adds is sound and speech. Driving well is still on you.
+
+Split-screen isn't supported by the mod: the item announcement and the driving aids follow
+player one only.
 
 ## Building from source
 
-Owning the game is still required even if you compile everything yourself.
+You don't need this to play. The installer already compiles the game.
 
-You'll need: .NET 8 SDK, CMake, Ninja, and LLVM/Clang (the shipped build uses LLVM-MinGW targeting
-`x86-64-v3`).
+The fork lives on the `accessibility` branch. Almost all of the mod is in
+`runtime/src/accessibility/`; the hooks into the rest of the runtime are a handful of one-line
+calls. The build follows upstream's: the translator turns the disc's code into C++, and
+LLVM-MinGW Clang compiles that together with the runtime. Upstream's own README, which this file
+replaces, is at [patchzyy/Wiicompiled](https://github.com/patchzyy/Wiicompiled).
 
-Build the translator:
+## Credits and license
 
-```powershell
-dotnet build translator/Translator.sln -c Release
-```
+WiiCompiled is patchzyy's work; without it none of this exists. PRISM is by Ethin Probst.
+Retro Rewind and Retro-WFC belong to their own teams.
 
-The default test suite needs no binaries and no host C++ compiler, so you can hack on the
-translator without any game data around.
-
-For everything beyond that, feeding in your own `main.dol`/`StaticR.rel`, running the
-translation, generating the manifest and build graph, and compiling. see [`translator/README.md`](translator/README.md).
-
-## FAQ
-
-**Is this an emulator?**
-No. Everything is compiled to native code before you ever press play. At runtime there's nothing
-emulating a Wii CPU or GPU.
-
-**Do you provide the game?**
-No. Don't ask. Nothing in this repo or any release contains Nintendo code or assets.
-
-**Why does setup take so long?**
-Because we **don't** ship the translated binary, most other recomp projects do, but we
-don't want to risk it right now, setup has to run a static recompiler over the whole game
-and then throw a C++ compiler at the result. It's a **one-time cost** on your machine.
-
-**Which game version works?**
-Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
-them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
-
-**Can I recompile other GameCube/Wii games with it?**
-The translator itself handles DOLs and RELs generically, see
-`projects/examples/generic-dol.yml`. The catch is that a *playable* port also needs a runtime:
-audio, input, GX, everything the game touches.
-
-**The game crashed / stopped with an error.**
-Errors are deliberately loud instead of quietly swallowed. Send a report along with the run log
-from `%LOCALAPPDATA%\WiiCompiled\Logs`.
-
-**Will you fix original bugs?**
-Not in the base game, behavior identical to real hardware is the goal. Only report things where this port differs
-from the original game. As for Retro Rewind, some base-game behavior **is** patched, so if it differs from the
-base game, that's normal. If Retro Rewind behavior differs between Dolphin/Wii and WiiCompiled, open an issue on GitHub.
-
-**How accurate are the physics?**
-100% - this is proven by in-game ghosts. Since ghosts are replay files based on inputs rather
-than tracked positions, matching ghosts prove the physics match across Dolphin/Wii/WiiCompiled.
-
-**Is it done?**
-Not fully. The game is in a state where everything should be playable and the physics do match
-100% with the original game, but compatibility, rendering, networking and performance are all
-actively being worked on. If you do find an issue, we strongly encourage you to open one on
-GitHub so we can take a look at it.
-
-## AI usage
-AI coding tools were used during development of this project. 
-All translated output is verified against real hardware behavior and most importantly, physics accuracy is proven synced across Wii, Dolphin, and WiiCompiled (see FAQ). 
-
-## Credits
-
-- **[aurora](https://github.com/encounter/aurora)** - the GX rendering/windowing backend this
-  project's whole graphics layer sits on. MIT licensed.
-- **[Dawn](https://dawn.googlesource.com/dawn)** - Google's WebGPU implementation, powering
-  aurora's Direct3D, Vulkan and OpenGL backends.
-- **[Dolphin Emulator](https://github.com/dolphin-emu/dolphin)** - an invaluable reference for Wii
-  hardware behavior during development, plus the source of the free DSP coefficient ROM and the
-  unmodified default WiiConnect24 bootstrap tree bundled with the runtime.
-- **[Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind)** by ZPL and team - the mod
-  distribution this project supports.
-- **[Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard)** - the mod manager this
-  project integrates with as a launch backend.
-- Everyone in the static recompilation community.
-
-Bundled third-party components and their licenses live in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
-
-
-## License
-
-WiiCompiled is free software: you can redistribute it and/or modify it under the terms of the
-[GNU General Public License, version 3](LICENSE) as published by the Free Software Foundation.
-
-WiiCompiled is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
-even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-General Public License for more details.
-
-Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0.
-
-Not affiliated with, endorsed by, or associated with Nintendo. Mario Kart Wii is a trademark of
-Nintendo. No Nintendo intellectual property is contained in, distributed with, or obtainable
-through this project.
+Like WiiCompiled, this project is licensed under the GPL v3.

@@ -17,7 +17,7 @@ enum class TurnSeverity { Easy, Normal, Hard, Hairpin };
 struct Curve {
     int firstVertex = 0, lastVertex = 0;  // authored lap vertices spanned; the corner's identity
     // Landmarks as fractional station coordinates (station + t along its segment), so they
-    // survive the racing line moving the stations sideways (RefreshCurveArcs re-reads them).
+    // survive the safe-line repair moving the stations sideways (RefreshCurveArcs re-reads them).
     float entryPos = 0.0f, apexPos = 0.0f, exitPos = 0.0f;
     // The same three places as arcs on the CURRENT line, in [0, LapLength()); length is always
     // positive.
@@ -31,6 +31,7 @@ struct Curve {
     bool follower = false;
     float totalDegrees = 0.0f;
     float radius = 0.0f;      // the road radius the grade was taken from
+    float corridorRadius = 0.0f;  // radius gained by using the available corridor
     bool driftPoint = false;  // a vertex reaches the game's own corner threshold: the CPU drifts
     bool forced = false;      // an ENPT force-drift point lies in the run
 };
@@ -62,7 +63,7 @@ public:
     int StationCount() const { return static_cast<int>(mPoints.size()); }
 
     // Moves each station sideways by `shifts[i]` world units towards the track's right: the
-    // racing line the edge map placed inside the real road. Only the stations move:
+    // safe line the edge map repaired inside the real road. Only the stations move:
     // RoadOffsetAtArc measures against them too, so the guide's target and the offset's zero are
     // one line by construction - centre pan has to keep meaning "you are on the line", which is
     // the player's own definition of the cue.
@@ -173,7 +174,6 @@ public:
 
     const std::vector<Curve>& Curves() const { return mCurves; }
     float CurveApex(const Curve& c) const { return c.apex; }
-    float CurveExit(const Curve& c) const { return WrapForward(c.entry + c.length); }
     // The corner whose span contains this arc, or nullptr on a straight.
     const Curve* CurveContaining(float arc) const;
     // The corner after / before this one along the lap (wraps; a lap with one corner returns it).
@@ -204,10 +204,11 @@ private:
     void BuildCheckpointStations(const std::vector<Checkpoint>& checkpoints);
     void BuildDerived();
     void BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints);
-    // The corners (course_curves.cpp). They read the AUTHORED route vertices, never the racing
+    // The corners (course_curves.cpp). They read the AUTHORED route vertices, never the repaired
     // line and never the smoothed one: the game's own corner is a turn angle at those vertices,
     // and the line crosses the road between corners in an S that is no corner of the course.
     void BuildCurves();
+    void GradeCurve(Curve& curve) const;
     // Re-derives each corner's arc landmarks from the current stations (after a road shift).
     void RefreshCurveArcs();
     // Temporary diagnostic dump of the segmentation result.

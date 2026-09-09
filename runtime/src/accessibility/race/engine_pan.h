@@ -14,7 +14,7 @@ struct RaceState;
 //
 // The one thing this writes to guest memory is a pan value on one sound object. It changes nothing
 // mechanical: no physics, no timing, no odds. A sighted player hears their engine positioned by the
-// camera; a blind player hears it positioned by the racing line.
+// camera; a blind player hears it positioned by the safe driving line.
 class EnginePan {
 public:
     void Reset();
