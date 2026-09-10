@@ -85,6 +85,9 @@ struct RuntimeUserConfig {
     // runtime/src/hle/sc_language.cpp, because the managed NAND never seeds a SYSCONF for the SDK
     // to read.
     std::optional<int32_t> systemLanguage;
+    // The name the player's Mii carries, hence the name other players see online. The managed
+    // NAND has no Mii database and no Mii Channel, so the game's default Mii takes this name.
+    std::optional<std::string> miiName;
     std::optional<bool> discordPresenceEnabled;
     // The application ID of the WiiCompiled Discord application. This is only
     // used by the base product; Retro Rewind supplies its own ID through the
@@ -349,7 +352,10 @@ inline void EnsureConfigFile() {
               "# 6 Dutch, 7 Simplified Chinese, 8 Traditional Chinese, 9 Korean.\n"
               "# A PAL disc carries English, French, German, Spanish and Italian.\n"
               "# Takes effect on the next launch: the game reads it once while booting.\n"
-              "language = 1\n\n"
+              "language = 1\n"
+              "# Name other players see online, up to 10 characters; the game's own Mii takes it.\n"
+              "# Empty or missing leaves the game's default (\"no name\").\n"
+              "# mii_name = \"\"\n\n"
               "[accessibility]\n"
               "# Screen-reader narration and the blind driving assists. Everything in THIS\n"
               "# section applies while the game is running: save the file and the mod says\n"
@@ -540,6 +546,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         language && *language >= kSystemLanguageMin && *language <= kSystemLanguageMax) {
         config.systemLanguage = *language;
     }
+    config.miiName = FindConfigValue<std::string>(document, "system", "mii_name");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
     config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
 
@@ -1032,6 +1039,13 @@ inline uint32_t FrameInterpolationFps(uint32_t fallback = 0) {
 inline int32_t SystemLanguage(int32_t fallback = kSystemLanguageDefault) {
     return std::clamp(Get().systemLanguage.value_or(fallback), kSystemLanguageMin,
                       kSystemLanguageMax);
+}
+
+// The RFLCharData name field holds ten UTF-16 code units; the writer enforces the cut.
+inline constexpr size_t kMiiNameMaxChars = 10;
+// Empty when the player left it unset.
+inline std::string MiiName() {
+    return Get().miiName.value_or(std::string());
 }
 
 inline bool SetSystemLanguage(int32_t value) {
