@@ -84,6 +84,18 @@ same folder and press "Add Retro Rewind".
 If something fails, the installer says so and the full log is in `installer-log.txt` in the
 install folder. Fixing the cause and pressing Install again continues from where it stopped.
 
+## Updating
+
+You only download the installer once. To update, run it again and point it at your install
+folder: it looks up the releases on GitHub and tells you in the status line whether there's a
+newer one. **Update** takes you to the latest version. **Modify** installs whichever version is
+selected in the Version list, older ones included, in case a new release breaks something for
+you.
+
+An update downloads a few megabytes (just the changed source) and then recompiles the game,
+which takes about as long as the first install did. Your settings, saves and disc data are left
+alone, and the game you already have keeps working if the update fails halfway.
+
 ## The settings menu
 
 From any game menu (not during a race), click both sticks at once (L3+R3) or press F8 on the
