@@ -1,10 +1,13 @@
+#include "../../fs_helper.hpp"
 #include "../../input.hpp"
 #include "../../internal.hpp"
 #include <dolphin/pad.h>
 #include <dolphin/si.h>
 #include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_joystick.h>
 
 #include <array>
+#include <atomic>
 #include <sys/stat.h>
 #include <ranges>
 
@@ -191,6 +194,32 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
     {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
 }};
 
+// Wii U Pro Controllers through SDL's HIDAPI Wii driver. No SDL_GamepadType
+// singles them out, so they are picked by the name the driver gives them (see
+// __PADSetDefaultMapping). Wii Remotes, with or without a Nunchuk or Classic
+// Controller, are read by the game through KPAD instead and never get a
+// GameCube mapping (the runtime hides those ports from PADRead).
+
+// Nintendo's labelled layout: A on the right accelerates, B at the bottom
+// brakes. SDL's Wii driver reports ZL/ZR as the LEFT_TRIGGER/RIGHT_TRIGGER
+// axes, never as shoulder buttons, so they are left unbound here and picked up
+// by aurora's default axis mapping (g_defaultAxes) the same way every
+// analog-trigger pad's L/R is.
+std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiUPro{{
+    {SDL_GAMEPAD_BUTTON_EAST, PAD_BUTTON_A},
+    {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_B},
+    {SDL_GAMEPAD_BUTTON_NORTH, PAD_BUTTON_X},
+    {SDL_GAMEPAD_BUTTON_WEST, PAD_BUTTON_Y},
+    {SDL_GAMEPAD_BUTTON_START, PAD_BUTTON_START},
+    {SDL_GAMEPAD_BUTTON_BACK, PAD_TRIGGER_Z},
+    {PAD_NATIVE_BUTTON_INVALID, PAD_TRIGGER_L},
+    {PAD_NATIVE_BUTTON_INVALID, PAD_TRIGGER_R},
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, PAD_BUTTON_UP},
+    {SDL_GAMEPAD_BUTTON_DPAD_DOWN, PAD_BUTTON_DOWN},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, PAD_BUTTON_LEFT},
+    {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
+}};
+
 std::array<PADKeyButtonBinding, PAD_BUTTON_COUNT> g_defaultKeys{{
     {PAD_KEY_INVALID, PAD_BUTTON_A},
     {PAD_KEY_INVALID, PAD_BUTTON_B},
@@ -283,7 +312,7 @@ constexpr PADCLampRegion ClampRegion{
 
 bool g_initialized;
 bool g_keyboardBindingsLoaded = false;
-bool g_blockPAD = false;
+std::atomic_bool g_blockPAD{false};
 bool g_suppressHeldOnRead = false;
 std::array<PADButton, PAD_CHANMAX> g_suppressedButtons{};
 std::array<bool, PAD_CHANMAX> g_suppressLeftTrigger{};
@@ -407,8 +436,26 @@ static void reset_alt_button_mapping(aurora::input::GameController* controller) 
   }
 }
 
+// SDL's hidapi Wii driver names the pad "Nintendo Wii U Pro Controller"; the
+// other names it produces are Wii Remotes, which the game reads through KPAD
+// and which therefore never take a GameCube mapping.
+static bool wii_default_mapping(const aurora::input::GameController* controller,
+                                std::array<PADButtonMapping, PAD_BUTTON_COUNT>& out) {
+  const char* name = SDL_GetGamepadName(controller->m_controller);
+  if (name == nullptr || SDL_strstr(name, "Wii U Pro Controller") == nullptr) {
+    return false;
+  }
+  out = g_defaultButtonsWiiUPro;
+  return true;
+}
+
+// Picks the default button table for a controller by name (Wii pads) or SDL gamepad type.
 void __PADSetDefaultMapping(aurora::input::GameController* controller) /*  NOLINT(*-reserved-identifier) */
 {
+  if (wii_default_mapping(controller, controller->m_buttonMapping)) {
+    reset_alt_button_mapping(controller);
+    return;
+  }
   switch (SDL_GetGamepadType(controller->m_controller)) {
   case SDL_GAMEPAD_TYPE_XBOX360:
     controller->m_buttonMapping = g_defaultButtonsXBox360;
@@ -491,7 +538,7 @@ void __PADLoadMapping(aurora::input::GameController* controller) /*  NOLINT(*-re
     return;
   }
 
-  std::string basePath{aurora::g_config.userPath};
+  const std::filesystem::path basePath = fs_path_from_string(aurora::g_config.userPath);
   if (!controller->m_mappingLoaded) {
     __PADSetDefaultMapping(controller);
     controller->m_axisMapping = g_defaultAxes;
@@ -499,8 +546,9 @@ void __PADLoadMapping(aurora::input::GameController* controller) /*  NOLINT(*-re
 
   controller->m_mappingLoaded = true;
 
-  const auto path = fmt::format("{}/{}_{:04X}_{:04X}.controller", basePath, PADGetName(playerIndex), controller->m_vid,
-                                controller->m_pid);
+  const auto path = fs_path_to_string(
+      basePath / fmt::format("{}_{:04X}_{:04X}.controller", PADGetName(playerIndex), controller->m_vid,
+                             controller->m_pid));
   SDL_IOStream* file = SDL_IOFromFile(path.c_str(), "rb");
   if (file == nullptr) {
     return;
@@ -659,7 +707,8 @@ u32 PADRead(PADStatus* status) {
 
   int numKeys = 0;
   const bool* kbState = SDL_GetKeyboardState(&numKeys);
-  const bool captureHeldInput = g_suppressHeldOnRead && !g_blockPAD;
+  const bool inputBlocked = g_blockPAD.load(std::memory_order_acquire);
+  const bool captureHeldInput = g_suppressHeldOnRead && !inputBlocked;
   g_suppressHeldOnRead = false;
 
   uint32_t rumbleSupport = 0;
@@ -741,6 +790,47 @@ u32 PADRead(PADStatus* status) {
 
     if (controller) {
       EnsureMappingLoaded(controller);
+
+      // Wii U Pro Controller raw D-pad fallback. SDL's HIDAPI Wii driver posts
+      // the D-pad as joystick buttons 11-14 (the SDL_GAMEPAD_BUTTON_DPAD_*
+      // values) and never as a hat, but the mapping SDL generates for HIDAPI
+      // pads binds the D-pad to hat 0, so SDL_GetGamepadButton(DPAD_*) stays
+      // false. Keep this restricted to the Wii driver's pad so raw button
+      // indices don't interfere with other controller types.
+      const char* name = SDL_GetGamepadName(controller->m_controller);
+      const bool isWiiUPro = name != nullptr && SDL_strstr(name, "Wii U Pro Controller") != nullptr;
+
+      if (isWiiUPro) {
+        SDL_Joystick* joystick =
+            SDL_GetGamepadJoystick(controller->m_controller);
+
+        uint32_t raw = 0;
+        const int buttonCount = SDL_GetNumJoystickButtons(joystick);
+
+        for (int b = 0; b < buttonCount && b < 32; ++b) {
+          if (SDL_GetJoystickButton(joystick, b)) {
+            raw |= (1u << b);
+          }
+        }
+
+        // Up    = button 11
+        if (raw & (1u << 11)) {
+          status[i].button |= PAD_BUTTON_UP;
+        }
+        // Down  = button 12
+        if (raw & (1u << 12)) {
+          status[i].button |= PAD_BUTTON_DOWN;
+        }
+        // Left  = button 13
+        if (raw & (1u << 13)) {
+          status[i].button |= PAD_BUTTON_LEFT;
+        }
+        // Right = button 14
+        if (raw & (1u << 14)) {
+          status[i].button |= PAD_BUTTON_RIGHT;
+        }
+      }
+
       bool leftTriggerSet = false;
       bool rightTriggerSet = false;
       std::ranges::for_each(controller->m_buttonMapping, [&controller, &i, &status, &leftTriggerSet,
@@ -773,6 +863,7 @@ u32 PADRead(PADStatus* status) {
           rightTriggerSet = true;
         }
       });
+
 
       // TODO: Add serializable mappings for these (probably not necessary)?
       static constexpr std::array<std::pair<SDL_GamepadButton, PADExtButton>, PAD_EXT_BUTTON_COUNT> kExtButtonMappings{{
@@ -882,7 +973,7 @@ u32 PADRead(PADStatus* status) {
       }
     }
 
-    if (g_blockPAD) {
+    if (inputBlocked) {
       neutralize_status(status[i]);
     } else {
       apply_unblock_suppression(status[i], i, captureHeldInput);
@@ -1247,8 +1338,8 @@ constexpr uint32_t k_keyboardMagic = SBIG('KBND');
 constexpr int32_t k_keyboardVersion = 3;
 
 static void load_keyboard_bindings() {
-  const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "rb");
+  const auto filePath = fs_path_from_string(aurora::g_config.userPath) / "keyboard_bindings.dat";
+  SDL_IOStream* file = SDL_IOFromFile(fs_path_to_string(filePath).c_str(), "rb");
   if (file == nullptr) {
     return;
   }
@@ -1317,10 +1408,11 @@ static void load_keyboard_bindings() {
 }
 
 static void save_keyboard_bindings() {
-  const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "wb");
+  const auto filePath = fs_path_from_string(aurora::g_config.userPath) / "keyboard_bindings.dat";
+  const auto filePathStr = fs_path_to_string(filePath);
+  SDL_IOStream* file = SDL_IOFromFile(filePathStr.c_str(), "wb");
   if (file == nullptr) {
-    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", filePath.string());
+    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", filePathStr);
     return;
   }
 
@@ -1344,14 +1436,14 @@ void __PADWriteDeadZones(SDL_IOStream* file, // NOLINT(*-reserved-identifier)
 }
 
 void PADSerializeMappings() {
-  const std::filesystem::path basePath{aurora::g_config.userPath};
+  const std::filesystem::path basePath = fs_path_from_string(aurora::g_config.userPath);
 
   for (auto& controller : aurora::input::g_GameControllers | std::views::values) {
     EnsureMappingLoaded(&controller);
     const auto filePath =
         basePath / fmt::format("{}_{:04X}_{:04X}.controller", aurora::input::controller_name(controller.m_index),
                                controller.m_vid, controller.m_pid);
-    std::string filePathStr = filePath.string();
+    std::string filePathStr = fs_path_to_string(filePath);
 
     // don't truncate the file if it already exists
     const char* openMode = std::filesystem::exists(filePath) ? "r+b" : "wb";
@@ -1370,7 +1462,7 @@ void PADSerializeMappings() {
     // start writing data at next 32-byte aligned offset
     const int64_t dataStart = SDL_TellIO(file) + 31 & ~31;
     if (dataStart == -1) {
-      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePath.string());
+      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePathStr);
       return;
     }
     SDL_SeekIO(file, dataStart, SDL_IO_SEEK_SET);
@@ -1530,11 +1622,11 @@ void PADRestoreDefaultMapping(const u32 port) {
 }
 
 void PADBlockInput(const bool block) {
-  if (g_blockPAD && !block) {
+  if (g_blockPAD.exchange(block, std::memory_order_acq_rel) && !block) {
     g_suppressHeldOnRead = true;
   }
-  g_blockPAD = block;
 }
+
 
 SDL_Gamepad* PADGetSDLGamepadForIndex(const u32 index) {
   const auto* ctrl = __PADGetControllerForIndex(index);

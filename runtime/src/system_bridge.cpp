@@ -9,23 +9,26 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#endif
 
 
 #include "abi_bridge.h"
 #include "memory.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
+#include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
 #include "timebase_contract.h"
 
 // Global flag to suppress SEH reporting during static constructor execution
 bool g_suppressSehReporting = false;
-thread_local jmp_buf* g_sehJumpTarget = nullptr;
+thread_local MkwJmpBuf* g_sehJumpTarget = nullptr;
 thread_local uint32_t g_sehLastExceptionCode = 0;
 thread_local uintptr_t g_sehLastExceptionAddress = 0;
 thread_local uintptr_t g_sehLastAccessedAddress = 0;
@@ -346,9 +349,9 @@ void SystemBridge::Initialize() {
         if (funcAddr == 0 || funcAddr == 0xFFFFFFFF) continue;
 
         if (TranslatedFunctionRegistry::FindByAddressPtr(funcAddr)) {
-            jmp_buf jumpBuf;
+            MkwJmpBuf jumpBuf;
             g_sehJumpTarget = &jumpBuf;
-            if (setjmp(jumpBuf) == 0) {
+            if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
                 InvokeIndirectCpu(funcAddr, &cpu);
                 dolCount++;
@@ -386,9 +389,9 @@ void SystemBridge::Initialize() {
         if (funcAddr == 0 || funcAddr == 0xFFFFFFFF) continue;
 
         if (TranslatedFunctionRegistry::FindByAddressPtr(funcAddr)) {
-            jmp_buf jumpBuf;
+            MkwJmpBuf jumpBuf;
             g_sehJumpTarget = &jumpBuf;
-            if (setjmp(jumpBuf) == 0) {
+            if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
                 InvokeIndirectCpu(funcAddr, &cpu);
                 count++;
@@ -409,14 +412,14 @@ void SystemBridge::Initialize() {
     RT_LOG(RT_TAG_RUNTIME) << "Executed " << count << " static constructors." << std::endl;
 }
 
-void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const char* mem1Path) {
+void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path) {
     constexpr uint32_t kMem1Base = 0x80000000u;
     constexpr uint32_t kMem1Size = 0x01800000u;
     if (Memory::Contains(kMem1Base, kMem1Size)) {
         std::ofstream dump(mem1Path, std::ios::binary | std::ios::trunc);
         dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem1Base, kMem1Size)),
                    kMem1Size);
-        os << "[runtime] MEM1 snapshot written to " << mem1Path
+        os << "[runtime] MEM1 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem1Path)
            << (dump.good() ? "" : " (write failed)") << std::endl;
     }
     constexpr uint32_t kMem2Base = 0x90000000u;
@@ -424,11 +427,12 @@ void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const char* mem1Pa
         if (!Memory::Contains(kMem2Base, mem2Size)) {
             continue;
         }
-        const std::string mem2Path = std::string(mem1Path) + ".mem2";
+        std::filesystem::path mem2Path = mem1Path;
+        mem2Path += ".mem2";
         std::ofstream dump(mem2Path, std::ios::binary | std::ios::trunc);
         dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem2Base, mem2Size)),
                    mem2Size);
-        os << "[runtime] MEM2 snapshot written to " << mem2Path
+        os << "[runtime] MEM2 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem2Path)
            << (dump.good() ? "" : " (write failed)") << std::endl;
         break;
     }

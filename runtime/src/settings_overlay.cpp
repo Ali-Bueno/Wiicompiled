@@ -1,9 +1,13 @@
 #include "settings_overlay.h"
 #include "audio_backend.h"
+#include "controller_button_names.h"
+#include "controller_mapping_wizard.h"
+#include "input_bindings.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wii_remote_input.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -32,6 +36,8 @@
 #endif
 
 #include <dolphin/pad.h>
+
+extern "C" void PAD_HLE_SetRumbleEnabled(bool enabled);
 #include <dolphin/vi.h>
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
@@ -63,6 +69,7 @@ const char* GraphicsApiDisplayName() {
 }
 
 bool g_topBarVisible = false;
+bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
 int g_audioVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::AudioVolume(1.0f) * 100.0f));
@@ -104,62 +111,9 @@ std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     return indices;
 }();
 
-struct ControllerButtonItem {
-    const char* configKey;
-    const char* label;
-    PADButton padButton;
-};
-
-constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons = {{
-    {"a", "A", PAD_BUTTON_A},
-    {"b", "B", PAD_BUTTON_B},
-    {"x", "X", PAD_BUTTON_X},
-    {"y", "Y", PAD_BUTTON_Y},
-    {"start", "Start", PAD_BUTTON_START},
-    {"z", "Z", PAD_TRIGGER_Z},
-    {"l", "L", PAD_TRIGGER_L},
-    {"r", "R", PAD_TRIGGER_R},
-    {"up", "D-pad Up", PAD_BUTTON_UP},
-    {"down", "D-pad Down", PAD_BUTTON_DOWN},
-    {"left", "D-pad Left", PAD_BUTTON_LEFT},
-    {"right", "D-pad Right", PAD_BUTTON_RIGHT},
-}};
-
-struct NativeButtonItem {
-    const char* configName;
-    const char* label;
-    uint32_t nativeButton;
-};
-
-constexpr std::array<NativeButtonItem, SDL_GAMEPAD_BUTTON_COUNT + 1> kNativeButtons = {{
-    {"unmapped", "Unmapped / analog trigger", PAD_NATIVE_BUTTON_INVALID},
-    {"south", "South (A / Cross)", SDL_GAMEPAD_BUTTON_SOUTH},
-    {"east", "East (B / Circle)", SDL_GAMEPAD_BUTTON_EAST},
-    {"west", "West (X / Square)", SDL_GAMEPAD_BUTTON_WEST},
-    {"north", "North (Y / Triangle)", SDL_GAMEPAD_BUTTON_NORTH},
-    {"back", "Back / Select", SDL_GAMEPAD_BUTTON_BACK},
-    {"guide", "Guide / Home", SDL_GAMEPAD_BUTTON_GUIDE},
-    {"start", "Start / Options", SDL_GAMEPAD_BUTTON_START},
-    {"left_stick", "Left stick click", SDL_GAMEPAD_BUTTON_LEFT_STICK},
-    {"right_stick", "Right stick click", SDL_GAMEPAD_BUTTON_RIGHT_STICK},
-    {"left_shoulder", "Left shoulder", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
-    {"right_shoulder", "Right shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
-    {"dpad_up", "D-pad Up", SDL_GAMEPAD_BUTTON_DPAD_UP},
-    {"dpad_down", "D-pad Down", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
-    {"dpad_left", "D-pad Left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
-    {"dpad_right", "D-pad Right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
-    {"misc1", "Misc 1 / Share", SDL_GAMEPAD_BUTTON_MISC1},
-    {"right_paddle1", "Right paddle 1", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
-    {"left_paddle1", "Left paddle 1", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},
-    {"right_paddle2", "Right paddle 2", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
-    {"left_paddle2", "Left paddle 2", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2},
-    {"touchpad", "Touchpad", SDL_GAMEPAD_BUTTON_TOUCHPAD},
-    {"misc2", "Misc 2", SDL_GAMEPAD_BUTTON_MISC2},
-    {"misc3", "Misc 3 / GC L click", SDL_GAMEPAD_BUTTON_MISC3},
-    {"misc4", "Misc 4 / GC R click", SDL_GAMEPAD_BUTTON_MISC4},
-    {"misc5", "Misc 5", SDL_GAMEPAD_BUTTON_MISC5},
-    {"misc6", "Misc 6", SDL_GAMEPAD_BUTTON_MISC6},
-}};
+using ControllerNames::kNativeButtons;
+using ControllerNames::NativeButtonItem;
+constexpr const auto& kControllerButtons = ControllerNames::kGameCubeButtons;
 
 // Classic Controller Pro layout, indexed like kControllerButtons: the SNES-style
 // diamond (A right, B bottom, X top, Y left) with digital bumpers driving the GC
@@ -173,6 +127,13 @@ constexpr std::array<const char*, PAD_BUTTON_COUNT> kClassicProPreset = {
     "back",           // Z
     "left_shoulder",  // L
     "right_shoulder", // R
+    "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+};
+
+// PlayStation layout: bumpers drive the GC triggers, Z moves to Create/Share.
+constexpr std::array<const char*, PAD_BUTTON_COUNT> kPlayStationPreset = {
+    "south", "east", "west", "north", "start", "back",
+    "left_shoulder", "right_shoulder",
     "dpad_up", "dpad_down", "dpad_left", "dpad_right",
 };
 
@@ -223,50 +184,31 @@ void LimitResolutionForFrameRate() {
     }
 }
 
-const NativeButtonItem* FindNativeButton(std::string value) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return value == item.configName;
-    });
-    return it == kNativeButtons.end() ? nullptr : &*it;
-}
+using ControllerNames::FindNativeButton;
 
 struct ControllerBindingPair {
     std::string primary;
     std::string secondary;
 };
 
-std::string TrimBindingToken(const std::string& token) {
-    const size_t begin = token.find_first_not_of(" \t");
-    if (begin == std::string::npos) {
-        return {};
-    }
-    const size_t end = token.find_last_not_of(" \t");
-    return token.substr(begin, end - begin + 1);
-}
 
 // Config values hold up to two comma-separated button names ("dpad_up" or
 // "dpad_up,left_shoulder"); pressing either one counts as the GC button.
 ControllerBindingPair SplitControllerBinding(const std::string& value) {
     const size_t comma = value.find(',');
     if (comma == std::string::npos) {
-        return {TrimBindingToken(value), {}};
+        return {ControllerNames::TrimToken(value), {}};
     }
-    return {TrimBindingToken(value.substr(0, comma)), TrimBindingToken(value.substr(comma + 1))};
+    return {ControllerNames::TrimToken(value.substr(0, comma)), ControllerNames::TrimToken(value.substr(comma + 1))};
 }
 
-const NativeButtonItem& NativeButtonForValue(uint32_t nativeButton) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return nativeButton == item.nativeButton;
-    });
-    return it == kNativeButtons.end() ? kNativeButtons.front() : *it;
-}
+using ControllerNames::NativeButtonForValue;
 
 void SetTopBarVisible(bool visible) {
     if (g_topBarVisible == visible) {
         return;
     }
     g_topBarVisible = visible;
-    PADBlockInput(visible);
 }
 
 void ApplyConfiguredMappings() {
@@ -277,6 +219,15 @@ void ApplyConfiguredMappings() {
         }
         g_configuredControllerIndices[port] = controllerIndex;
         if (controllerIndex < 0) {
+            continue;
+        }
+        // The [controller] bindings are positional and shared by every port, so
+        // they describe whatever pad the user set them up with (usually an Xbox
+        // layout: a = south). A Wii U Pro Controller has a fixed, known layout
+        // (A on the east position) that aurora already maps by name; applying
+        // the shared bindings on top swaps A/B and X/Y. (Wii Remotes with any
+        // extension never reach the PAD layer: the game reads them through KPAD.)
+        if (WiiRemoteInput::KindForPort(port) == WiiRemoteInput::Kind::WiiUPro) {
             continue;
         }
 
@@ -310,6 +261,235 @@ void ApplyConfiguredMappings() {
     }
 }
 
+bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled(true);
+bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(false);
+
+// Accelerometer readout and zero-point calibration for a bare remote / remote + Nunchuk.
+void DrawWiiRemoteAccelerometer(uint32_t port) {
+    ImGui::SeparatorText("Accelerometer");
+    float sdlG[3] = {};
+    float kpad[3] = {};
+    if (WiiRemoteInput::ReadAccelDebug(port, sdlG, kpad)) {
+        ImGui::Text("KPAD acc: x %+.2f  y %+.2f  z %+.2f g", kpad[0], kpad[1], kpad[2]);
+        ImGui::TextDisabled("Flat, buttons up: (0, -1, 0). Sideways as a wheel: (1, 0, 0); z follows the turn.");
+    } else {
+        ImGui::TextDisabled("No accelerometer data yet.");
+    }
+    // SDL's read of the remote's calibration block often times out over Bluetooth
+    // and it falls back to a nominal zero point, leaving a small per-axis bias;
+    // measured here with the remote at rest.
+    if (WiiRemoteInput::IsAccelCalibrating()) {
+        ImGui::ProgressBar(WiiRemoteInput::AccelCalibrationProgress(), ImVec2(220.0f, 0.0f), "Hold still...");
+    } else if (ImGui::Button("Calibrate (remote lying flat, buttons up)")) {
+        WiiRemoteInput::StartAccelCalibration(port);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Put the remote down on a flat surface with the buttons facing up and do not touch it\n"
+                          "for about two seconds. Corrects the steering offset of a remote held sideways.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!RuntimeConfigFile::HasWiiAccelOffset() || WiiRemoteInput::IsAccelCalibrating());
+    if (ImGui::Button("Clear calibration")) {
+        WiiRemoteInput::ClearAccelCalibration();
+    }
+    ImGui::EndDisabled();
+    if (const char* message = WiiRemoteInput::AccelCalibrationMessage()) {
+        ImGui::TextWrapped("%s", message);
+    } else if (RuntimeConfigFile::HasWiiAccelOffset()) {
+        const std::array<double, 3> offset = RuntimeConfigFile::WiiAccelOffset();
+        ImGui::TextDisabled("Stored offset: x %+.3f  y %+.3f  z %+.3f g", offset[0], offset[1], offset[2]);
+    } else {
+        ImGui::TextDisabled("Not calibrated (using SDL's zero point; see console.log for \"fallback accelerometer calibration\").");
+    }
+}
+
+// Wii Remotes (Bluetooth) menu: driver switch, pairing help, continuous scanning and the port's controller kind.
+void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
+    if (!ImGui::BeginMenu("Wii Remotes (Bluetooth)")) {
+        return;
+    }
+    if (ImGui::Checkbox("Use Wii Remotes / Wii U Pro Controllers", &g_wiiRemotesEnabled)) {
+        RuntimeConfigFile::SetWiiRemotesEnabled(g_wiiRemotesEnabled);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Takes effect on the next launch. Turn this off if you use a Mayflash DolphinBar.");
+    }
+    ImGui::TextDisabled("Pairing: Windows Settings > Bluetooth > Add device, then press 1+2");
+    ImGui::TextDisabled("(or the red SYNC button) on the remote. Leave the PIN empty.");
+    ImGui::TextDisabled("A remote that was paired before also needs to be turned on with 1+2/SYNC.");
+    if (ImGui::Checkbox("Keep scanning for Wii Remotes (like Dolphin's Continuous Scanning)",
+                        &g_wiiContinuousScan)) {
+        RuntimeConfigFile::SetWiiContinuousScanEnabled(g_wiiContinuousScan);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("While no Wii controller is connected, re-check Bluetooth every 2 seconds so a\n"
+                          "remote that dropped out (\"Communications with the controller have been\n"
+                          "interrupted\") or was turned on after launch comes back by itself.");
+    }
+    // The driver hint is only read at launch, so a rescan after the user turned
+    // the setting off would still re-enumerate Wii devices in this session.
+    ImGui::BeginDisabled(!g_wiiRemotesEnabled);
+    if (ImGui::Button("Rescan now")) {
+        WiiRemoteInput::RescanNow();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (WiiRemoteInput::IsScanning()) {
+        ImGui::TextDisabled("Scanning... (%u so far) - press 1+2 on the remote", WiiRemoteInput::ScanCount());
+    } else {
+        ImGui::TextDisabled("Not scanning");
+    }
+    ImGui::Separator();
+
+    const WiiRemoteInput::Kind kind = WiiRemoteInput::KindForPort(selectedGamePort);
+    ImGui::Text("Port %u: %s", static_cast<unsigned>(selectedGamePort + 1), WiiRemoteInput::KindLabel(kind));
+    if (kind == WiiRemoteInput::Kind::RemoteWithClassic) {
+        WiiRemoteInput::KpadSample sample;
+        if (WiiRemoteInput::ReadKpadSample(selectedGamePort, sample)) {
+            // WPAD_CL_BUTTON_* bits, in the game's own layout (no mapping involved).
+            const auto held = [&](uint32_t bit, const char* on, const char* off) { return (sample.clHold & bit) ? on : off; };
+            ImGui::Text("Classic: %s %s %s %s  %s %s  %s %s  %s %s  %s %s %s %s", held(0x0010, "A", "a"),
+                        held(0x0040, "B", "b"), held(0x0008, "X", "x"), held(0x0020, "Y", "y"), held(0x2000, "L", "l"),
+                        held(0x0200, "R", "r"), held(0x0080, "ZL", "zl"), held(0x0004, "ZR", "zr"),
+                        held(0x0400, "PLUS", "plus"), held(0x1000, "MINUS", "minus"), held(0x0001, "UP", "up"),
+                        held(0x4000, "DOWN", "down"), held(0x0002, "LEFT", "left"), held(0x8000, "RIGHT", "right"));
+            ImGui::Text("Sticks: L %+.2f %+.2f (WPAD %+d %+d)  R %+.2f %+.2f (WPAD %+d %+d)", sample.clLStick[0],
+                        sample.clLStick[1], static_cast<int>(sample.clLStickRaw[0]),
+                        static_cast<int>(sample.clLStickRaw[1]), sample.clRStick[0], sample.clRStick[1],
+                        static_cast<int>(sample.clRStickRaw[0]), static_cast<int>(sample.clRStickRaw[1]));
+            ImGui::TextDisabled("Capitals = held. The game reads this Classic Controller through KPAD, as on the");
+            ImGui::TextDisabled("console: its buttons mean what the game says they mean, no mapping applies.");
+        }
+    }
+    if (kind == WiiRemoteInput::Kind::WiiUPro) {
+        if (SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(selectedGamePort))) {
+            // SDL's Wii driver posts the D-pad as joystick buttons 11-14 (the
+            // SDL_GAMEPAD_BUTTON_DPAD_* values) while its default HIDAPI mapping
+            // expects a hat, so SDL_GetGamepadButton never sees them; read the
+            // joystick directly, like the fallback in aurora's PADRead does.
+            SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
+            const auto rawButton = [&](int index) {
+                return joystick != nullptr && SDL_GetJoystickButton(joystick, index);
+            };
+            ImGui::Text("Raw D-pad: %s %s %s %s", rawButton(SDL_GAMEPAD_BUTTON_DPAD_UP) ? "UP" : "up",
+                        rawButton(SDL_GAMEPAD_BUTTON_DPAD_DOWN) ? "DOWN" : "down",
+                        rawButton(SDL_GAMEPAD_BUTTON_DPAD_LEFT) ? "LEFT" : "left",
+                        rawButton(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) ? "RIGHT" : "right");
+            ImGui::Text("Raw face buttons: %s %s %s %s", rawButton(SDL_GAMEPAD_BUTTON_EAST) ? "A" : "a",
+                        rawButton(SDL_GAMEPAD_BUTTON_SOUTH) ? "B" : "b", rawButton(SDL_GAMEPAD_BUTTON_NORTH) ? "X" : "x",
+                        rawButton(SDL_GAMEPAD_BUTTON_WEST) ? "Y" : "y");
+            ImGui::Text("Raw ZL/ZR: %d / %d (pressed above 0)",
+                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
+                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+            ImGui::TextDisabled("Capitals = held. If a button never turns to capitals while physically held,");
+            ImGui::TextDisabled("that press is not reaching SDL at all (a driver-level issue, not a mapping one).");
+            ImGui::TextDisabled("This pad uses Nintendo's own layout (a/b/x/y as labelled); the shared");
+            ImGui::TextDisabled("button mapping above does not apply to it.");
+        }
+    }
+    if (kind == WiiRemoteInput::Kind::Remote || kind == WiiRemoteInput::Kind::RemoteWithNunchuk ||
+        kind == WiiRemoteInput::Kind::RemoteWithClassic) {
+        DrawWiiRemoteAccelerometer(selectedGamePort);
+    }
+
+    ImGui::EndMenu();
+}
+
+// Controller settings menu: port selection, controller assignment and button mapping.
+int ExpressionResizeCallback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* text = static_cast<std::string*>(data->UserData);
+        text->resize(static_cast<size_t>(data->BufTextLen));
+        data->Buf = text->data();
+    }
+    return 0;
+}
+
+void DrawExpressionSettings() {
+    ImGui::SeparatorText("Expressions (Dolphin syntax)");
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440.0f);
+    ImGui::TextDisabled(
+        "Optional. An expression overrides nothing: its result is combined with the "
+        "button mapping above. Operators ! & | ^ and functions if, min, max, clamp, "
+        "timer, toggle, hold, tap, pulse, smooth, deadzone behave as they do in Dolphin.");
+    ImGui::PopTextWrapPos();
+
+    static std::array<std::string, InputBindings::kControls.size()> errors;
+    static std::array<std::string, InputBindings::kControls.size()> buffers;
+    static std::string importStatus;
+    static int loadedPort = -1;
+    static bool reloadBuffers = true;
+    const auto port = static_cast<uint32_t>(g_controllerPort);
+
+    if (loadedPort != g_controllerPort || reloadBuffers) {
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            buffers[i] = InputBindings::GetExpression(port, i);
+        }
+        errors.fill(std::string());
+        loadedPort = g_controllerPort;
+        reloadBuffers = false;
+    }
+
+    if (ImGui::Button("Import from Dolphin")) {
+        const std::string path = InputBindings::DefaultDolphinConfigPath();
+        std::string summary;
+        std::string error;
+        if (InputBindings::ImportDolphinConfig(path, g_controllerPort + 1, port, summary, error) < 0) {
+            importStatus = error;
+        } else {
+            importStatus = summary;
+            errors.fill(std::string());
+            reloadBuffers = true;
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Reads [GCPad%d] from %%APPDATA%%\\Dolphin Emulator\\Config\\GCPadNew.ini,\n"
+                          "or GCPadNew.ini next to the executable.", g_controllerPort + 1);
+    }
+    if (!importStatus.empty()) {
+        ImGui::TextDisabled("%s", importStatus.c_str());
+    }
+
+    for (size_t i = 0; i < InputBindings::kControls.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i) + 2000);
+        std::string& text = buffers[i];
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::InputText(InputBindings::kControls[i].label, text.data(), text.capacity() + 1,
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackResize,
+                             ExpressionResizeCallback, &text)) {
+            std::string error;
+            errors[i] = InputBindings::SetExpression(port, i, text, error) ? std::string() : error;
+        }
+        if (InputBindings::IsActive(port, i)) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "active");
+        }
+        if (!errors[i].empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.3f, 1.0f), "%s", errors[i].c_str());
+        }
+        ImGui::PopID();
+    }
+}
+
+void DrawRumbleSettings() {
+    ImGui::SeparatorText("Vibration");
+    if (ImGui::Checkbox("Controller vibration", &g_rumbleEnabled)) {
+        PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+        RuntimeConfigFile::SetRumbleEnabled(g_rumbleEnabled);
+        if (!g_rumbleEnabled) {
+            // Stop whatever is already running: the game will not send another
+            // motor command until its own state machine decides to.
+            constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
+                PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD,
+            };
+            PADControlAllMotors(stopAll.data());
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Applies to every port.");
+    }
+}
+
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -320,20 +500,28 @@ void DrawControllerSettings() {
     }
 
     ImGui::Separator();
+    const uint32_t selectedGamePort = static_cast<uint32_t>(g_controllerPort);
+    const char* currentName = PADGetName(selectedGamePort);
+    ImGui::Text("Assigned: %s", currentName != nullptr ? currentName : "None");
+    if (ImGui::MenuItem("Unassign controller")) {
+        PADClearPort(selectedGamePort);
+        g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+    }
+    ImGui::Separator();
+    controller_mapping_wizard::DrawSetupList();
+    DrawWiiRemoteSettings(selectedGamePort);
     const uint32_t controllerCount = PADCount();
     if (controllerCount == 0) {
         ImGui::TextDisabled("No controller connected");
         return;
     }
 
-    const char* currentName = PADGetName(static_cast<uint32_t>(g_controllerPort));
-    ImGui::Text("Assigned: %s", currentName != nullptr ? currentName : "None");
     if (ImGui::BeginMenu("Assign connected controller")) {
         for (uint32_t index = 0; index < controllerCount; ++index) {
             const char* name = PADGetNameForControllerIndex(index);
             ImGui::PushID(static_cast<int>(index));
             if (ImGui::MenuItem(name != nullptr ? name : "Unknown controller")) {
-                PADSetPortForIndex(index, static_cast<uint32_t>(g_controllerPort));
+                PADSetPortForIndex(index, selectedGamePort);
                 g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
                 ApplyConfiguredMappings();
             }
@@ -390,20 +578,28 @@ void DrawControllerSettings() {
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Classic Controller Pro")) {
+    const auto applyPreset = [&](const std::array<const char*, PAD_BUTTON_COUNT>& preset) {
         const uint32_t port = static_cast<uint32_t>(g_controllerPort);
         for (size_t i = 0; i < kControllerButtons.size(); ++i) {
-            if (const NativeButtonItem* native = FindNativeButton(kClassicProPreset[i])) {
+            if (const NativeButtonItem* native = FindNativeButton(preset[i])) {
                 PADSetButtonMapping(port, PADButtonMapping{native->nativeButton, kControllerButtons[i].padButton});
                 PADSetAltButtonMapping(port,
                                        PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
-                RuntimeConfigFile::SetControllerButton(i, kClassicProPreset[i]);
+                RuntimeConfigFile::SetControllerButton(i, preset[i]);
             }
         }
         altRowExpanded.fill(false);
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
+    };
+
+    ImGui::SameLine();
+    if (ImGui::Button("Classic Controller Pro")) {
+        applyPreset(kClassicProPreset);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("PlayStation")) {
+        applyPreset(kPlayStationPreset);
     }
 
     ImGui::SeparatorText("Button mapping");
@@ -485,7 +681,8 @@ void DrawControllerSettings() {
         ImGui::TextUnformatted(kControllerButtons[i].label);
         ImGui::PopID();
     }
-
+    DrawExpressionSettings();
+    DrawRumbleSettings();
 }
 
 void DrawAudioSettings() {
@@ -541,9 +738,9 @@ void DrawAudioSettings() {
         if (MusicAttenuation::IsExternalMediaPlaying()) {
             ImGui::TextDisabled("External media is playing; game music is muted.");
         } else if (!MusicAttenuation::IsMediaControlInitializationComplete()) {
-            ImGui::TextDisabled("Waiting for Windows Media Control...");
+            ImGui::TextDisabled("Waiting for media controls...");
         } else if (!MusicAttenuation::IsMediaControlAvailable()) {
-            ImGui::TextDisabled("Windows Media Control is unavailable.");
+            ImGui::TextDisabled("Media controls are unavailable.");
         } else {
             ImGui::TextDisabled("No external media is currently playing.");
         }
@@ -840,6 +1037,9 @@ void PersistDisplayModeIfChanged() {
 } // namespace
 
 void InitializeRuntimeSettings() noexcept {
+    PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+    InputBindings::Reload();
+    controller_mapping_wizard::LoadPersistedMappings();
     ApplyConfiguredMappings();
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
     AudioBackend::Instance().SetMuted(g_audioMuted);
@@ -858,7 +1058,8 @@ void InitializeRuntimeSettings() noexcept {
     aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
     g_strapInputAccepted.store(false, std::memory_order_relaxed);
     g_startupDismissFrame.store(UINT64_MAX, std::memory_order_relaxed);
-    PADBlockInput(g_topBarVisible);
+    PADBlockInput(false);
+    InputBindings::SetInputBlocked(false);
 }
 
 void HandleEvents(const AuroraEvent* events) noexcept {
@@ -872,6 +1073,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
         }
+        controller_mapping_wizard::HandleSdlEvent(ev->sdl);
         if (IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
             SetTopBarVisible(!g_topBarVisible);
         }
@@ -885,6 +1087,11 @@ void Draw() noexcept {
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
     // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.
     aurora_wait_for_frame_worker();
+    // Also drive the Wii Remote rescan from here: PADRead runs it too, but this
+    // runs once per presented frame whatever the game is doing (e.g. sitting in
+    // its "communications interrupted" prompt without polling pads). Same guest
+    // thread as PADRead, so no concurrent access to the scanner's state.
+    WiiRemoteInput::Poll();
     ApplyConfiguredMappings();
     PersistDisplayModeIfChanged();
     UpdateCursorAutoHide();
@@ -893,6 +1100,11 @@ void Draw() noexcept {
     }
     DrawFpsOverlay();
     DrawTopBar();
+    controller_mapping_wizard::Draw();
+    // The wizard captures raw presses; keep them out of the game.
+    const bool inputBlocked = controller_mapping_wizard::IsActive();
+    PADBlockInput(inputBlocked);
+    InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();
 }
 

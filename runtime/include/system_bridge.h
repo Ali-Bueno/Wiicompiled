@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -10,10 +11,23 @@
 
 #include "memory.h"
 
+// Windows' SehLogger longjmps out of a vectored exception handler, where plain setjmp/longjmp is
+// the norm. A POSIX signal handler jumping back to here must use the sig-prefixed pair instead:
+// only sigsetjmp/siglongjmp save and restore the process signal mask, which is what keeps SIGSEGV
+// from staying blocked (and a second fault during the same ctor loop from escalating instead of
+// trapping) after the first recovered fault.
+#if defined(_WIN32)
+using MkwJmpBuf = jmp_buf;
+#define MKW_SETJMP(buf) setjmp(buf)
+#else
+using MkwJmpBuf = sigjmp_buf;
+#define MKW_SETJMP(buf) sigsetjmp(buf, 1)
+#endif
+
 // Global flag to suppress SEH reporting (caught by system_bridge)
 extern bool g_suppressSehReporting;
 // Jump buffer for SEH recovery
-extern thread_local jmp_buf* g_sehJumpTarget;
+extern thread_local MkwJmpBuf* g_sehJumpTarget;
 // SEH details for the most recent trapped exception (used during ctor execution).
 extern thread_local uint32_t g_sehLastExceptionCode;
 extern thread_local uintptr_t g_sehLastExceptionAddress;
@@ -22,6 +36,7 @@ extern thread_local uint32_t g_sehLastAccessType;
 
 void WriteFatalLog(std::string_view reason);
 void SetRuntimeExitCode(int code);
+void MarkFatalErrorReported();
 
 // Centralized crash reporting (defined in main.cpp). Every fatal path funnels
 // through these so the per-run log folder always receives the same artifact
@@ -72,5 +87,5 @@ public:
     // `mem1Path` and MEM2 to `mem1Path + ".mem2"`, logging outcomes to `os`.
     static void DumpCrashHeuristics(std::ostream& os, const struct CpuContext* cpu,
                                     const uint32_t* missingGuestTarget);
-    static void WriteGuestMemorySnapshot(std::ostream& os, const char* mem1Path);
+    static void WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path);
 };

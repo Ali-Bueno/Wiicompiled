@@ -17,6 +17,7 @@ extern Module Log;
 struct GameController {
   SDL_Gamepad* m_controller = nullptr;
   bool m_isGameCube = false;
+  bool m_gameCubeUseOrdinaryStop = false;
   Sint32 m_index = -1;
   Sint32 m_playerIndex = -1;
   bool m_hasRumble = false;
@@ -51,6 +52,7 @@ struct GameController {
 GameController* get_controller_for_player(uint32_t player) noexcept;
 Sint32 get_instance_for_player(uint32_t player) noexcept;
 SDL_JoystickID add_controller(SDL_JoystickID which) noexcept;
+bool refresh_controller(SDL_JoystickID instance) noexcept;
 void remove_controller(Uint32 instance) noexcept;
 Sint32 player_index(Uint32 instance) noexcept;
 void set_player_index(Uint32 instance, Sint32 index) noexcept;

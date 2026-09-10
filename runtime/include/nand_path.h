@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime_config.h"
+#include "nand_settings.h"
 #include "runtime_log.h"
 #include "system_bridge.h"
 
@@ -27,13 +28,14 @@ inline std::optional<std::filesystem::path> ExistingDirectory(const std::filesys
     if (path.empty()) {
         RT_LOGF(RT_TAG_NAND, "ERROR: %s\n", message);
     } else {
-        RT_LOGF(RT_TAG_NAND, "ERROR: %s: %s\n", message, path.string().c_str());
+        RT_LOGF(RT_TAG_NAND, "ERROR: %s: %s\n", message,
+                RuntimeConfigFile::PathToUtf8(path).c_str());
     }
     RT_LOGF(RT_TAG_NAND, "Set [paths] nand_root in Config.toml.\n");
     std::string details = message ? message : "The configured NAND could not be initialized.";
     if (!path.empty()) {
         details += "\n\nPath: ";
-        details += path.string();
+        details += RuntimeConfigFile::PathToUtf8(path);
     }
     details += "\n\nSet [paths] nand_root in Config.toml and try again.";
     // Same fatal idiom as the DVD and OS paths: crash artifacts first so the run
@@ -49,18 +51,6 @@ inline std::optional<std::filesystem::path> ExistingDirectory(const std::filesys
 
 inline std::filesystem::path ResolveConfiguredPath(const std::string& value) {
     return RuntimeConfigFile::ResolveRelativeToConfig(value);
-}
-
-inline std::string PathStringWithoutTrailingSeparators(std::filesystem::path path) {
-    std::string text = path.string();
-    while (!text.empty()) {
-        const char tail = text.back();
-        if (tail != '\\' && tail != '/') {
-            break;
-        }
-        text.pop_back();
-    }
-    return text;
 }
 
 inline std::filesystem::path ManagedNandRootPath() {
@@ -134,7 +124,9 @@ inline bool SeedMissingBootstrapFiles(const std::filesystem::path& root) {
         const std::filesystem::path relativePath{std::string(file)};
         ec.clear();
         if (!CopyBootstrapFile(*payload, root, relativePath, ec)) {
-            RT_LOG(RT_TAG_NAND) << "could not create " << (root / relativePath).string() << std::endl;
+            RT_LOG(RT_TAG_NAND) << "could not create "
+                                << RuntimeConfigFile::PathToUtf8(root / relativePath)
+                                << std::endl;
             return false;
         }
     }
@@ -167,11 +159,12 @@ inline std::filesystem::path CreateManagedNandRoot() {
         }
     }
 
-    RT_LOG(RT_TAG_NAND) << "using managed NAND root: " << root.string() << std::endl;
+    RT_LOG(RT_TAG_NAND) << "using managed NAND root: " << RuntimeConfigFile::PathToUtf8(root)
+                        << std::endl;
     return root;
 }
 
-inline std::filesystem::path DiscoverNandRootPath() {
+inline std::filesystem::path ResolveNandRootPath() {
     const std::string configPath = RuntimeConfigFile::NandRoot();
     if (!configPath.empty()) {
         const auto path = ResolveConfiguredPath(configPath);
@@ -187,8 +180,16 @@ inline std::filesystem::path DiscoverNandRootPath() {
     return CreateManagedNandRoot();
 }
 
-inline std::string DiscoverNandRootString() {
-    return PathStringWithoutTrailingSeparators(DiscoverNandRootPath());
+inline std::filesystem::path DiscoverNandRootPath() {
+    static const auto root = [] {
+        const auto resolved = ResolveNandRootPath();
+        std::string error;
+        if (!RuntimeNandSettings::Ensure(resolved, error)) {
+            FailNandRoot(error.c_str(), RuntimeNandSettings::FilePath(resolved));
+        }
+        return resolved;
+    }();
+    return root;
 }
 
 } // namespace RuntimeNandPath

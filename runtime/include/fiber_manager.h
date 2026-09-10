@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -22,7 +23,7 @@
 // Forward declarations
 struct CpuContext;
 
-// GuestFiberManager: each guest OSThread maps to a Windows Fiber. A scheduler fiber picks
+// GuestFiberManager: each guest OSThread maps to a host context. A scheduler context picks
 // which guest fiber runs; a real timer thread queues VI retraces at the VI cadence. Guest
 // threads only switch at explicit yield points (OSSleepThread, OSYieldThread, ...), matching
 // Wii cooperative semantics exactly.
@@ -39,7 +40,7 @@ enum class ThreadState : uint32_t {
 
 // Information about a guest fiber
 struct GuestFiber {
-    void* fiber = nullptr;              // Windows fiber handle
+    void* fiber = nullptr;              // Host context handle
     uint32_t entryPoint = 0;            // Thread entry function
     uint32_t entryArg = 0;              // Argument to entry function
     CpuContext cpuContext{};            // Saved CPU context for this fiber
@@ -103,11 +104,18 @@ private:
 #else
     static void FiberProc(void* param);
 #endif
-    
+    // Switch from whichever fiber is currently active straight to the scheduler fiber, without
+    // the SwitchToThread bookkeeping (CPU context save/restore, s_currentGuestThread). Used for
+    // in-fiber yields that aren't a real guest thread switch: waiting out the EGG::Thread::start
+    // deferral loop, and returning control on natural thread exit.
+    static void SwitchToScheduler();
+
     // Internal state
     static std::mutex s_mutex;
     static std::unordered_map<uint32_t, GuestFiber> s_fibers;
     static std::vector<void*> s_fibersPendingDelete;
+    // The scheduler's own host context. Its opaque handle is supplied by the
+    // active HostContext backend, so one field serves every supported host.
     static void* s_schedulerFiber;
     static uint32_t s_currentGuestThread;
     static bool s_initialized;
@@ -123,4 +131,3 @@ private:
 extern std::atomic<uint32_t> g_viRetracePendingCount;
 
 } // namespace Fiber
-

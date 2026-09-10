@@ -255,6 +255,18 @@ IdentityMatch identity_match(const ControllerIdentity& saved, const ControllerId
              : IdentityMatch::None;
 }
 
+void assign_player_index(GameController& controller, int32_t port) {
+  SDL_SetGamepadPlayerIndex(controller.m_controller, port);
+  controller.m_playerIndex = port;
+}
+
+// SDL forgets the index for devices mapped after connect, so player_index() falls
+// back to the cached copy; both have to move together or a port looks doubly taken.
+int32_t effective_player_index(const GameController& controller) {
+  const int32_t player = SDL_GetGamepadPlayerIndex(controller.m_controller);
+  return player >= 0 ? player : controller.m_playerIndex;
+}
+
 bool is_instance_claimed(const std::array<Uint32, PAD_MAX_CONTROLLERS>& claimedControllers, size_t claimedCount,
                          Uint32 instance) {
   return std::find(claimedControllers.begin(), claimedControllers.begin() + claimedCount, instance) !=
@@ -269,10 +281,10 @@ void apply_port_preferences() noexcept {
   }
 
   for (auto& [instance, controller] : g_GameControllers) {
-    const int32_t player = SDL_GetGamepadPlayerIndex(controller.m_controller);
+    const int32_t player = effective_player_index(controller);
     if (player >= 0 && player < PAD_MAX_CONTROLLERS && g_portPreferences[player].state != PortPreferenceState::Unset) {
       // Keep SDL's default player assignment from taking explicitly configured ports
-      SDL_SetGamepadPlayerIndex(controller.m_controller, -1);
+      assign_player_index(controller, -1);
     }
   }
 
@@ -293,7 +305,7 @@ void apply_port_preferences() noexcept {
 
       switch (identity_match(preference.identity, controller_identity(controller))) {
       case IdentityMatch::Exact:
-        SDL_SetGamepadPlayerIndex(controller.m_controller, static_cast<int32_t>(port));
+        assign_player_index(controller, static_cast<int32_t>(port));
         claimedControllers[claimedCount++] = instance;
         fallbackController = nullptr;
         break;
@@ -311,9 +323,43 @@ void apply_port_preferences() noexcept {
     }
 
     if (fallbackController != nullptr) {
-      SDL_SetGamepadPlayerIndex(fallbackController->m_controller, static_cast<int32_t>(port));
+      assign_player_index(*fallbackController, static_cast<int32_t>(port));
       claimedControllers[claimedCount++] = fallbackInstance;
     }
+  }
+}
+
+// SDL only hands out a player index when the device already had a gamepad mapping
+// at connect time, so anything mapped later (the setup wizard) stays at -1.
+void ensure_player_index(GameController& controller) noexcept {
+  const int32_t player = SDL_GetGamepadPlayerIndex(controller.m_controller);
+  if (player >= 0) {
+    controller.m_playerIndex = player;
+    return;
+  }
+  if (controller.m_playerIndex >= 0) {
+    return;
+  }
+  ensure_port_preferences_loaded();
+  const auto claim = [&](bool skipConfiguredPorts) {
+    for (int32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+      if (skipConfiguredPorts && g_portPreferences[port].state != PortPreferenceState::Unset) {
+        continue;
+      }
+      const bool taken = std::any_of(g_GameControllers.begin(), g_GameControllers.end(), [&](const auto& entry) {
+        return entry.second.m_controller != controller.m_controller && effective_player_index(entry.second) == port;
+      });
+      if (!taken) {
+        assign_player_index(controller, port);
+        return true;
+      }
+    }
+    return false;
+  };
+  // Explicitly configured ports are only used as a last resort so a hot-plugged
+  // controller cannot steal the port its preferred device will claim.
+  if (!claim(true)) {
+    claim(false);
   }
 }
 } // namespace
@@ -355,6 +401,8 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
       return -1;
     }
     controller.m_isGameCube = controller.m_vid == 0x057E && controller.m_pid == 0x0337;
+    const char* serial = SDL_GetGamepadSerial(ctrl);
+    controller.m_gameCubeUseOrdinaryStop = controller.m_isGameCube && serial && "GCP+"sv == serial;
     if (controller.m_isGameCube ||
         (SDL_GetGamepadType(ctrl) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO && controller.m_pid == 0x2073)) {
       controller.m_deadZones.emulateTriggers = false;
@@ -364,11 +412,25 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
     controller.m_hasRgbLed = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
     SDL_JoystickID instance = SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
     g_GameControllers[instance] = controller;
+    ensure_player_index(g_GameControllers[instance]);
     apply_port_preferences();
     return instance;
   }
 
   return -1;
+}
+
+bool refresh_controller(SDL_JoystickID instance) noexcept {
+  const auto it = g_GameControllers.find(instance);
+  if (it == g_GameControllers.end()) {
+    return false;
+  }
+  // The SDL mapping changed underneath us; drop the cached PAD bindings so they
+  // are rebuilt from the new one.
+  it->second.m_mappingLoaded = false;
+  ensure_player_index(it->second);
+  apply_port_preferences();
+  return true;
 }
 
 void remove_controller(Uint32 instance) noexcept {
@@ -421,6 +483,13 @@ bool controller_has_rumble(Uint32 instance) noexcept {
 void controller_rumble(uint32_t instance, uint16_t low_freq_intensity, uint16_t high_freq_intensity,
                        uint16_t duration_ms) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
+    // GC Pocket+ has been observed continuing to vibrate after a hard stop;
+    // an ordinary stop cleared it. With GAMECUBE_RUMBLE_BRAKE enabled, SDL
+    // encodes (0, 1) as adapter command 0, whereas (0, 0) sends command 2.
+    // Apply the workaround here so shutdown uses the same stop as PAD calls.
+    if (it->second.m_gameCubeUseOrdinaryStop && low_freq_intensity == 0 && high_freq_intensity == 0) {
+      high_freq_intensity = 1;
+    }
     SDL_RumbleGamepad(it->second.m_controller, low_freq_intensity, high_freq_intensity, duration_ms);
   }
 }
