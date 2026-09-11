@@ -200,7 +200,11 @@ private:
     // does not pay for resolving it again. Left zero when the two ends nearly cancel.
     void ForwardInSegment(int station, float t, float& x, float& z) const;
     bool BuildRouteStations();
-    void ResampleUniform();
+    // The station spacing: the lap's median corridor half-width. Zero when it cannot be found.
+    float StationSpacing() const;
+    // Rounds the route's corners into arcs and records each vertex's arc (course_fillet.cpp).
+    void FilletCorners(float spacing);
+    void ResampleUniform(float spacing);
     void BuildCheckpointStations(const std::vector<Checkpoint>& checkpoints);
     void BuildDerived();
     void BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints);

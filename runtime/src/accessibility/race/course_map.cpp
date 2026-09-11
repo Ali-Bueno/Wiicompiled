@@ -183,7 +183,9 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
     mGraph.Build(std::move(route), startPoint);
     const bool routeLap = BuildRouteStations();
     if (routeLap) {
-        ResampleUniform();
+        const float spacing = StationSpacing();
+        FilletCorners(spacing);
+        ResampleUniform(spacing);
     } else {
         BuildCheckpointStations(checkpoints);
     }
@@ -226,23 +228,13 @@ bool CourseMap::Build(std::vector<RoutePoint> route, std::uint8_t startPoint,
 // corner spans several stations wherever the road could hold one, and the same on every course.
 // The authored points are a route, not a sampling - Mushroom Gorge's are 5,000 units apart on a
 // 750-unit corridor - and every threshold stated per station meant a different thing per course.
-// Station zero stays the route's start point so the checkpoint mapping is unchanged.
-void CourseMap::ResampleUniform() {
+// A route authored with no corridor at all (11 of Retro Rewind's 341 tracks leave every ENPT
+// range at 0) falls back to the route's own median segment length - still the course's scale.
+float CourseMap::StationSpacing() const {
     const int n = StationCount();
     if (n < kMinStations) {
-        return;
+        return 0.0f;
     }
-    std::vector<float> arc(static_cast<std::size_t>(n) + 1, 0.0f);
-    for (int i = 0; i < n; ++i) {
-        const Station& a = mPoints[static_cast<std::size_t>(i)];
-        const Station& b = mPoints[static_cast<std::size_t>(Wrap(i + 1))];
-        arc[static_cast<std::size_t>(i) + 1] = arc[static_cast<std::size_t>(i)] + Hypot2(b.x - a.x, b.z - a.z);
-    }
-    const float lap = arc.back();
-
-    // The spacing is the lap's median corridor half-width. A route authored with no corridor at
-    // all (11 of Retro Rewind's 341 tracks leave every ENPT range at 0) falls back to the route's
-    // own median segment length - still the course's scale, and the corners need no width.
     std::vector<float> scale;
     scale.reserve(static_cast<std::size_t>(n));
     for (const Station& s : mPoints) {
@@ -252,22 +244,37 @@ void CourseMap::ResampleUniform() {
     }
     if (scale.empty()) {
         for (int i = 0; i < n; ++i) {
-            scale.push_back(arc[static_cast<std::size_t>(i) + 1] - arc[static_cast<std::size_t>(i)]);
+            const Station& a = mPoints[static_cast<std::size_t>(i)];
+            const Station& b = mPoints[static_cast<std::size_t>(Wrap(i + 1))];
+            scale.push_back(Hypot2(b.x - a.x, b.z - a.z));
         }
         RT_LOGF(RT_TAG_A11Y, "course map: no corridor widths, spacing from the route's segments\n");
     }
     std::nth_element(scale.begin(), scale.begin() + scale.size() / 2, scale.end());
     const float spacing = scale[scale.size() / 2];
-    if (!(spacing > 0.0f) || !(lap > 0.0f)) {
+    return spacing > 0.0f ? spacing : 0.0f;
+}
+
+// Station zero stays the route's start point so the checkpoint mapping is unchanged. The vertex
+// arcs FilletCorners recorded are in this polyline's arc domain, and station i is exactly i steps
+// along it, so one division turns a vertex arc into a fractional station position.
+void CourseMap::ResampleUniform(float spacing) {
+    const int n = StationCount();
+    if (n < kMinStations || !(spacing > 0.0f)) {
+        return;
+    }
+    std::vector<float> arc(static_cast<std::size_t>(n) + 1, 0.0f);
+    for (int i = 0; i < n; ++i) {
+        const Station& a = mPoints[static_cast<std::size_t>(i)];
+        const Station& b = mPoints[static_cast<std::size_t>(Wrap(i + 1))];
+        arc[static_cast<std::size_t>(i) + 1] = arc[static_cast<std::size_t>(i)] + Hypot2(b.x - a.x, b.z - a.z);
+    }
+    const float lap = arc.back();
+    if (!(lap > 0.0f)) {
         return;
     }
     const int count = std::max(kMinStations, static_cast<int>(std::lround(lap / spacing)));
     const float step = lap / static_cast<float>(count);  // exact, so the seam closes
-
-    // Where each authored vertex sits along the polyline this walks, kept before the stations
-    // replace it: the corner model works in this arc domain, and station i is exactly i steps
-    // along it, so one division turns a vertex arc into a fractional station position.
-    mVertexArc.assign(arc.begin(), arc.begin() + n);
     mVertexArcStep = step;
 
     std::vector<Station> resampled;
