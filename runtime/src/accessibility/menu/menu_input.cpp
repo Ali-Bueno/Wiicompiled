@@ -3,6 +3,7 @@
 #include "accessibility/a11y_log.h"
 #include "accessibility/accessibility.h"
 #include "accessibility/menu/settings_menu.h"
+#include "accessibility/update_check.h"
 #include "aurora/event.h"
 
 // Host-side input for the settings menu: L3+R3 (or F8) toggles it, dpad/arrows drive it, A/Enter
@@ -68,10 +69,21 @@ void OnGamepadButton(const SDL_GamepadButtonEvent& event, bool down) {
     }
 }
 
+// Enter (either one) accepts an update question, Escape declines it.
+bool IsAnswerKey(SDL_Scancode code) {
+    return code == SDL_SCANCODE_RETURN || code == SDL_SCANCODE_KP_ENTER ||
+           code == SDL_SCANCODE_ESCAPE;
+}
+
 void OnKey(const SDL_KeyboardEvent& event) {
     SettingsMenu& menuInstance = SettingsMenu::Instance();
     if (event.scancode == SDL_SCANCODE_F8 && !event.repeat) {
         menuInstance.Enqueue(MenuAction::Toggle);
+        return;
+    }
+    // An unanswered update question owns those two keys, and only while the menu is closed.
+    if (!menuInstance.IsOpen() && !event.repeat && IsAnswerKey(event.scancode) &&
+        update::OnAnswer(event.scancode != SDL_SCANCODE_ESCAPE)) {
         return;
     }
     if (!menuInstance.IsOpen()) {

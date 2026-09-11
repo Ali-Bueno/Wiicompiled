@@ -55,6 +55,7 @@ struct RuntimeUserConfig {
     std::optional<bool> audioMuted;
     std::optional<bool> accessibilityInvertSteeringPan;
     std::optional<bool> accessibilityEdgeCues;
+    std::optional<bool> accessibilityCheckUpdates;
     std::optional<std::string> accessibilityLineSource;
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
@@ -93,6 +94,13 @@ struct RuntimeUserConfig {
     // used by the base product; Retro Rewind supplies its own ID through the
     // standard Dolphin /dev/dolphin interface.
     std::optional<std::string> discordClientId;
+    // [update] is written by the accessibility installer and only read here, so the runtime
+    // carries no URL and no install path of its own. A missing key skips that check.
+    std::optional<std::string> updateInstalledVersion;
+    std::optional<std::string> updateLatestReleaseUrl;
+    std::optional<std::string> updateRetroRewindVersionUrl;
+    std::optional<std::string> updateRetroRewindVersionFile;
+    std::optional<std::string> updateInstallerPath;
     std::optional<std::string> nandRoot;
     std::optional<std::string> dvdRoot;
     // The one canonical Retro Rewind installation, owned and updated by the frontend. Setup records
@@ -369,6 +377,9 @@ inline void EnsureConfigFile() {
               "line_source = \"cpu\"\n"
               "# Beeps as the kart nears the edge of the road, and a held tone once it leaves it.\n"
               "edge_cues = true\n"
+              "# At startup, check whether a newer mod or Retro Rewind release exists and\n"
+              "# offer to run the installer. Needs the [update] keys the installer writes.\n"
+              "check_updates = true\n"
               "# Engine volume per kart, as a percentage of the game's own; 100 leaves the game\n"
               "# untouched. The defaults already raise your own kart and drop the rivals, so you\n"
               "# hear your own engine - which is what the steering guide speaks through.\n"
@@ -525,6 +536,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "accessibility", "invert_steering_pan");
     config.accessibilityEdgeCues =
         FindConfigValue<bool>(document, "accessibility", "edge_cues");
+    config.accessibilityCheckUpdates =
+        FindConfigValue<bool>(document, "accessibility", "check_updates");
     config.accessibilityLineSource =
         FindConfigValue<std::string>(document, "accessibility", "line_source");
     config.accessibilityKartVolume = FindConfigInt(document, "accessibility", "kart_volume");
@@ -549,6 +562,16 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.miiName = FindConfigValue<std::string>(document, "system", "mii_name");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
     config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
+
+    config.updateInstalledVersion =
+        FindConfigValue<std::string>(document, "update", "installed_version");
+    config.updateLatestReleaseUrl =
+        FindConfigValue<std::string>(document, "update", "latest_release_url");
+    config.updateRetroRewindVersionUrl =
+        FindConfigValue<std::string>(document, "update", "retro_rewind_version_url");
+    config.updateRetroRewindVersionFile =
+        FindConfigValue<std::string>(document, "update", "retro_rewind_version_file");
+    config.updateInstallerPath = FindConfigValue<std::string>(document, "update", "installer_path");
 
     config.nandRoot = FindConfigValue<std::string>(document, "paths", "nand_root");
     config.dvdRoot = FindConfigValue<std::string>(document, "paths", "dvd_root");
@@ -928,6 +951,12 @@ inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
     return Get().accessibilityInvertSteeringPan.value_or(fallback);
 }
 
+// On when the key is absent: a player who never opens Config.toml is the one who most needs to be
+// told that an update exists.
+inline bool AccessibilityCheckUpdates(bool fallback = true) {
+    return Get().accessibilityCheckUpdates.value_or(fallback);
+}
+
 // Which lap line the guide follows. The item route (ITPT - what red shells and Bullet Bill
 // drive) measured more central and smoother than the CPUs' enemy route on most courses, and the
 // player read the enemy line as hugging the edge; "cpu" restores the enemy route. Any value but
@@ -1097,6 +1126,28 @@ inline bool NetworkEnabled(bool fallback = true) {
 
 inline std::string NandRoot(std::string fallback = "") {
     return Get().nandRoot.value_or(std::move(fallback));
+}
+
+// The [update] contract the accessibility installer writes. Read-only: the runtime never writes
+// these back, and an absent key simply switches its own check off.
+inline std::string UpdateInstalledVersion(std::string fallback = "") {
+    return Get().updateInstalledVersion.value_or(std::move(fallback));
+}
+
+inline std::string UpdateLatestReleaseUrl(std::string fallback = "") {
+    return Get().updateLatestReleaseUrl.value_or(std::move(fallback));
+}
+
+inline std::string UpdateRetroRewindVersionUrl(std::string fallback = "") {
+    return Get().updateRetroRewindVersionUrl.value_or(std::move(fallback));
+}
+
+inline std::string UpdateRetroRewindVersionFile(std::string fallback = "") {
+    return Get().updateRetroRewindVersionFile.value_or(std::move(fallback));
+}
+
+inline std::string UpdateInstallerPath(std::string fallback = "") {
+    return Get().updateInstallerPath.value_or(std::move(fallback));
 }
 
 inline std::string DvdRoot(std::string fallback = "") {

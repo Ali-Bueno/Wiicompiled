@@ -6,7 +6,9 @@
 #include "accessibility/config_reload.h"
 #include "accessibility/localization.h"
 #include "accessibility/menu/settings_menu.h"
+#include "accessibility/mii/mii_identity.h"
 #include "accessibility/race/race_manager.h"
+#include "accessibility/update_check.h"
 #include "screen_reader.h"
 #include "ui/screen_watcher.h"
 
@@ -36,6 +38,10 @@ void InitImpl() {
     // Cues stay independent of the reader on purpose: they must still work with no screen reader
     // running, and speech must still work with no audio device.
     audio::CueService::Instance().Start();
+    // Before the game builds its licence from the default Mii table.
+    mii::Init();
+    // Asks the network in the background; nothing here waits for it.
+    update::Start();
     RT_LOGF(RT_TAG_A11Y, "accessibility initialised (reader: %s, cues: %s)\n",
             ScreenReader::Instance().BackendName(),
             audio::CueService::Instance().Available() ? "on" : "off");
@@ -50,9 +56,15 @@ void TickImpl() {
         ScreenReader::Instance().Speak(loc::Get("ready"));
     }
 
+    // Speaks what the background check found, then asks whether to update now.
+    update::Tick();
+
     // A saved Config.toml applies its [accessibility] edits live - the file is the settings UI
     // until the self-voicing menu exists.
     ConfigReloadTick();
+
+    // Keeps our Mii in the Mii database and the licence on it once the save is loaded.
+    mii::Tick();
 
     // Everything the menus say is decided here: the watcher reads what is on screen and speaks
     // whatever changed since last frame.
