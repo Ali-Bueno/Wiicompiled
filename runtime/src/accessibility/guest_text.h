@@ -30,6 +30,11 @@ std::string ReadGuestText(std::uint32_t guestAddr,
 // character by character as the game composes it.
 std::string Utf16ToUtf8(const std::u16string& text) noexcept;
 
+// The reverse, for text that goes INTO the game (the configured Mii name). Control characters
+// and anything outside the Basic Multilingual Plane are dropped: the game's name fields are
+// UCS-2 and a screen reader would not voice them anyway. Malformed bytes are skipped.
+std::u16string Utf8ToUtf16(const std::string& text) noexcept;
+
 }  // namespace a11y
 
 #endif  // MKW_ACCESSIBILITY_GUEST_TEXT_H

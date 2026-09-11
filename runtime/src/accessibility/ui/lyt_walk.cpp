@@ -59,13 +59,36 @@ bool TryRead16(std::uint32_t addr, std::uint16_t& value) noexcept {
     }
 }
 
+// Checked with Contains first: a faulting Read8 makes the runtime dump the whole CPU state to
+// the log before throwing, and a bad pane pointer would do that every frame.
 bool TryRead8(std::uint32_t addr, std::uint8_t& value) noexcept {
+    if (!Memory::Contains(addr)) {
+        return false;
+    }
     try {
         value = Memory::Read8(addr);
         return true;
     } catch (const Memory::AccessViolation&) {
         return false;
     }
+}
+
+// A pane slot holding something that is not a pointer means the object is not what the walk
+// assumed (a control that is no LayoutUIControl, or a pane list of another shape). Named once
+// per control, with its vtable, so the class can be looked up in MAP.txt and excluded upstream.
+void NoteBadPane(std::uint32_t control, std::uint32_t pane, const char* where) {
+    static std::unordered_set<std::uint32_t> logged;
+    if (!logged.insert(control).second) {
+        return;
+    }
+    std::uint32_t vtable = 0;
+    Memory::TryRead32(control, vtable);
+    RT_LOGF(RT_TAG_A11Y, "layout walk: control %08x (vtable %08x): %s pane %08x is not mapped; skipped\n",
+            control, vtable, where, pane);
+}
+
+bool IsPaneMapped(std::uint32_t pane) noexcept {
+    return Memory::Contains(pane + kPaneFlags);
 }
 
 // One pane in isolation. The walk descends from a pane whose ancestors are already known visible,
@@ -128,6 +151,10 @@ std::string ReadControlText(std::uint32_t control, bool requireOpaque) noexcept 
     if (control == 0 || !Memory::TryRead32(control + kControlRootPane, root) || root == 0) {
         return {};
     }
+    if (!IsPaneMapped(root)) {
+        NoteBadPane(control, root, "root");
+        return {};
+    }
     if (!IsPaneSelfVisible(root, requireOpaque) || !AreAncestorsVisible(root, requireOpaque)) {
         return {};
     }
@@ -142,8 +169,11 @@ std::string ReadControlText(std::uint32_t control, bool requireOpaque) noexcept 
         stack.pop_back();
         ++visited;
 
+        if (!IsPaneMapped(pane)) {
+            NoteBadPane(control, pane, "child");
+            continue;
+        }
         const bool selfVisible = IsPaneSelfVisible(pane, requireOpaque);
-
 
         // Hidden panes keep their untranslated placeholder text, so reading one means speaking
         // something the player cannot see. Skipping the whole subtree is correct: the game's own
