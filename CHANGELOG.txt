@@ -1,0 +1,36 @@
+Changelog - Mario Kart Wii Accessibility
+
+
+Changes on 12/09/2026
+
+New:
+
+Your name on your Mii. The name the installer asks for (and the new "online name" row in the settings menu) is now carried by a Mii of the mod's own in the game's Mii database, so the licence screen and other players online see it instead of "Player". Renaming a built-in Mii never worked: the game prints "Player" for every one of its six default Miis no matter what they are called.
+
+Online name row in the settings menu. First row of the F8 / L3+R3 menu. Press A, type the name on the keyboard (each letter is read back, Backspace deletes), Enter saves, Escape keeps the old name. Up to ten characters. It is applied at once and the licence screen repaints with the new name; no restart needed.
+
+Update check at startup. Right after "accessibility ready" the game says whether a newer mod version or a newer Retro Rewind is out, and asks: Enter closes the game, runs the installer on your folder and starts the game again; Escape keeps playing. Nothing is downloaded or changed unless you say yes, and a missing network simply says nothing. It needs the installer from this release or later to have run once on your folder. Off with check_updates = false in Config.toml.
+
+Per-cue volume rows. Five new rows in the settings menu, one per cue family: edge, surface (off road / on road notes), curve (entry, apex, exit beeps), countdown (the three rising beeps into a corner) and item box. Each step replays the cue at the new level so you set it by ear. Saved as <cue>_cue_volume in Config.toml and picked up live when you edit the file.
+
+Steering guide calibration rows. At a player's request the guide's three knobs are exposed again: steering guide strength (how far the engine pans at most), anticipation (how far ahead the mod looks: a tenth of a second at 0, the play-tested eight tenths at 100, about a second and a half at 200; it also moves the corner calls and the edge warning) and steering lean angle (how far off the line the kart must point for the widest pan). The defaults are the play-tested values, so an untouched install sounds exactly as before.
+
+Changed:
+
+Smoother steering guide through corners. The racing line's corners are now rounded into arcs before the guide follows it. Before, each corner of the line came through as a sudden lean and a counter-lean right after it, faster than anyone can react from 100cc up; now a bend is one steady lean. On Luigi Circuit the worst kink in the line dropped from about 41 degrees to 18, and the kart's measured wobble at 150cc fell to what it was at 50cc.
+
+Fixed:
+
+The settings menu no longer lets the game navigate underneath it. The port rewrote the pad block every frame, so the menu's block lasted one frame and A or the stick reached the game's own menu while ours was open.
+
+Dialogs read their message. A screen with a message and a button only read the button; now the text is read first, then the focused item. This applies to every dialog, not a list of known ones.
+
+A bad layout pane no longer floods the log every frame: the screen reader's layout walk checks that a pane pointer is mapped before reading it.
+
+Installer:
+
+Asks for your online name on a fresh install, prefilled with the Windows account name; the name shows on a finished install.
+
+Writes the update contract the game reads (installed version, release address, Retro Rewind version file, installer path) and keeps a copy of itself in the install folder, so the in-game update prompt can start it. Accepts --update-mod, --update-retro and --update-all with --launch for that unattended run: the window still opens and logs everything, it just does not wait for a button.
+
+This release can be applied in place: Update in the installer downloads a few megabytes and rebuilds. The build dependencies did not change, so the full installer is only needed for a new install.

@@ -96,6 +96,12 @@ An update downloads a few megabytes (just the changed source) and then recompile
 which takes about as long as the first install did. Your settings, saves and disc data are left
 alone, and the game you already have keeps working if the update fails halfway.
 
+The game checks for updates itself too. When it starts and a newer mod version or a newer Retro
+Rewind is out, it says so right after "accessibility ready" and asks: Enter runs the update (the
+game closes, the installer does the work and starts the game again), Escape keeps playing. This
+needs the installer that comes with 0.1.11 or later to have run once on your folder; before
+that it just stays quiet. `check_updates` in `Config.toml` turns it off.
+
 ## The settings menu
 
 From any game menu (not during a race), click both sticks at once (L3+R3) or press F8 on the
@@ -111,13 +117,22 @@ Rows, in order:
 4. my kart volume (0 to 200)
 5. rival karts volume
 6. item roulette volume
-7. invert steering pan
-8. edge cues (on/off)
-9. hear the edge tone
-10. hear a curve beep
-11. hear the item box
+7. edge cue volume
+8. surface cue volume
+9. curve cue volume
+10. countdown cue volume
+11. item box cue volume
+12. invert steering pan
+13. steering guide strength
+14. anticipation
+15. steering lean angle
+16. edge cues (on/off)
+17. hear the edge tone
+18. hear a curve beep
+19. hear the item box
 
-The last three just play the sound so you know what to listen for.
+The last three just play the sound so you know what to listen for. The five cue volume rows
+replay their cue at the new level on every step, so you tune them by ear.
 
 "Online name" is the name other players see and the name of your Mii, up to 10 characters.
 Press A on the row, type the name on the keyboard (each letter is read back, Backspace deletes
@@ -127,6 +142,14 @@ restart needed, and it is the same name the installer asked for.
 About "invert steering pan": by default the engine sounds on the side you must steer *away*
 from. Some people would rather drive toward the sound, like following a guide. Turning this on
 flips it, and that's all it does.
+
+The three rows after it are the steering guide's own calibration. The defaults are the ones the
+guide was play-tested with, so leave them alone unless you know what you want. "Steering guide
+strength" is how far the engine pans at most. "Anticipation" is how far ahead the mod looks: a
+tenth of a second at 0, the play-tested eight tenths at 100, about a second and a half at 200; it
+moves the corner calls and the edge warning earlier or later as well. "Steering lean angle" is how
+far off the racing line the kart has to point before the pan is at its widest; lower it and the
+engine swings wider for the same corner.
 
 ## Changing things by hand
 
@@ -142,11 +165,23 @@ language = 4
 [accessibility]
 invert_steering_pan = false
 edge_cues = true
+# Ask at startup whether to update when a newer mod or Retro Rewind release exists.
+check_updates = true
 # "cpu" follows the line the CPU karts drive; "item" follows the item route instead.
 line_source = "cpu"
 kart_volume = 180
 rival_kart_volume = 20
 item_roulette_volume = 100
+# One per cue family, 0 to 100.
+edge_cue_volume = 100
+surface_cue_volume = 100
+curve_cue_volume = 100
+countdown_cue_volume = 100
+item_box_cue_volume = 100
+# The steering guide's calibration; these are the play-tested defaults.
+steering_strength = 40
+steering_look_ahead = 100
+steering_lean_angle = 30
 ```
 
 The language is the one thing the settings menu doesn't offer. The installer sets it, and after
