@@ -320,6 +320,23 @@ void ResetScreenWatcher() {
     g_labelText.clear();
 }
 
+void AbsorbScreenChanges() {
+    const std::vector<std::uint32_t> layers = ActiveLayerPages();
+    if (layers.empty()) {
+        return;
+    }
+    const std::uint32_t page = layers.back();
+    const std::uint32_t focused = FocusedControl(page);
+    g_spokenFocusText = focused != 0 ? ReadControlText(focused) : std::string{};
+    const PageLabels labels = ReadLabels(layers, page, focused);
+    for (const std::uint32_t label : labels.controls) {
+        g_labelText[label] = ReadControlText(label);
+    }
+    for (const std::uint32_t label : labels.background) {
+        g_labelText[label] = ReadControlText(label);
+    }
+}
+
 void TickScreenWatcher() {
     const std::vector<std::uint32_t> layers = ActiveLayerPages();
     if (layers.empty()) {

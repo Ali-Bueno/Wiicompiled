@@ -6,7 +6,9 @@
 #include "accessibility/guest_text.h"
 #include "accessibility/mii/mii_data.h"
 #include "accessibility/mii/mii_guest.h"
+#include "accessibility/mii/mii_license_page.h"
 #include "accessibility/mii/mii_look.h"
+#include "accessibility/ui/screen_watcher.h"
 #include "runtime_config.h"
 
 namespace a11y::mii {
@@ -15,6 +17,9 @@ namespace {
 Name g_name{};
 CreateId g_createId{};
 bool g_active = false;
+// A name changed after boot: the screen showing it is repainted once the record and the
+// licence carry the new id, i.e. on the next tick.
+bool g_repaintPending = false;
 // The record has to be rewritten whenever RFL reformats the database (it does once more when the
 // missing RFL_DB.dat fails to open). A few lines say how often that happened; more would be a loop.
 constexpr int kLoggedStores = 3;
@@ -131,6 +136,7 @@ void Refresh() {
     }
     g_createId = CreateIdFor(g_name);
     g_active = StampDefaultTable();
+    g_repaintPending = g_active;
     RT_LOGF(RT_TAG_A11Y, "mii: name \"%s\" %s\n", RuntimeConfigFile::MiiName().c_str(),
             g_active ? "stamped on the default Miis" : "could not be written; default Miis kept");
 }
@@ -143,6 +149,13 @@ void Tick() {
     // builds its Miis, and the reads cost a dozen words.
     EnsureDatabaseRecord();
     MigrateLicense();
+    if (g_repaintPending) {
+        g_repaintPending = false;
+        // Our own repaint is not news: the menu has just confirmed the name.
+        if (RepaintLicenseSelect()) {
+            ui::AbsorbScreenChanges();
+        }
+    }
 }
 
 }  // namespace a11y::mii

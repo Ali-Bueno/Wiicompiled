@@ -25,6 +25,10 @@ void TickScreenWatcher();
 // new screen that happened to land where the old one was.
 void ResetScreenWatcher();
 
+// Takes whatever the page shows now as already spoken. For a change the mod painted itself (a
+// renamed Mii on the licence screen), which the player has just been told about.
+void AbsorbScreenChanges();
+
 }  // namespace a11y::ui
 
 #endif  // MKW_ACCESSIBILITY_UI_SCREEN_WATCHER_H
