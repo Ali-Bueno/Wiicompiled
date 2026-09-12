@@ -99,6 +99,8 @@ private:
 
 // Menu preview: plays the held off-road tone as a one-shot, no race state needed.
 void PlayEdgeCueDemo();
+// Menu preview: the note that marks leaving the road.
+void PlaySurfaceCueDemo();
 
 // The note that marks leaving the road (`offRoad`) or returning to it, panned to `right` when
 // leaving. Built in track_edges.cpp so it shares the edge family's timbre and pitch constants.

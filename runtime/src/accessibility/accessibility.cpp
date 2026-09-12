@@ -3,6 +3,7 @@
 #include "prism_runtime.h"
 #include "accessibility/a11y_log.h"
 #include "accessibility/audio/cue_service.h"
+#include "accessibility/audio/cue_volume.h"
 #include "accessibility/config_reload.h"
 #include "accessibility/localization.h"
 #include "accessibility/menu/settings_menu.h"
@@ -38,6 +39,7 @@ void InitImpl() {
     // Cues stay independent of the reader on purpose: they must still work with no screen reader
     // running, and speech must still work with no audio device.
     audio::CueService::Instance().Start();
+    audio::LoadCueVolumes();
     // Before the game builds its licence from the default Mii table.
     mii::Init();
     // Asks the network in the background; nothing here waits for it.

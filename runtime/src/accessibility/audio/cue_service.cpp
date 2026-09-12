@@ -100,6 +100,10 @@ void CueService::SetMasterVolume(float volume) {
     }
 }
 
+void CueService::SetChannelVolume(CueChannel channel, float volume) {
+    VoiceFor(channel).channelVolume = std::clamp(volume, 0.0f, 1.0f);
+}
+
 void CueService::Apply(Voice& voice, const CueSpec& spec, bool sustained, bool restart) {
     voice.shape = spec.shape;
     voice.targetFreq = std::max(spec.frequencyHz, 0.0f);
@@ -231,7 +235,7 @@ void CueService::Render(int frames) {
                 voice.phase += voice.freq * secPerSample;
                 voice.phase -= std::floor(voice.phase);
             }
-            const float sample = raw * voice.amp * voice.env;
+            const float sample = raw * voice.amp * voice.env * voice.channelVolume;
             const float left = sample * voice.gainL;
             const float right = sample * voice.gainR;
             mMix[static_cast<size_t>(i) * kChannels] += left;

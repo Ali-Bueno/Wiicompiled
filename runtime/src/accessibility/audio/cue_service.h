@@ -78,6 +78,9 @@ public:
     void StopAll();
 
     void SetMasterVolume(float volume);
+    // One family's own level, 0..1, on top of the cue's amplitude. Takes effect at once, even
+    // on a channel already sounding.
+    void SetChannelVolume(CueChannel channel, float volume);
 
 private:
     CueService() = default;
@@ -98,6 +101,7 @@ private:
         const Sample* sample = nullptr;  // owned by the SampleBank, which never unloads
         float samplePos = 0.0f;          // in source samples; fractional part interpolates
         float rate = 1.0f;
+        float channelVolume = 1.0f;  // the family's knob
     };
 
     Voice& VoiceFor(CueChannel channel) { return mVoices[static_cast<int>(channel)]; }

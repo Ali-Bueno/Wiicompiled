@@ -53,6 +53,9 @@ struct RuntimeUserConfig {
     std::optional<float> audioUiVolume;
     std::optional<float> audioVoicesVolume;
     std::optional<bool> audioMuted;
+    std::optional<int32_t> accessibilitySteeringStrength;
+    std::optional<int32_t> accessibilitySteeringLookAhead;
+    std::optional<int32_t> accessibilitySteeringLeanAngle;
     std::optional<bool> accessibilityInvertSteeringPan;
     std::optional<bool> accessibilityEdgeCues;
     std::optional<bool> accessibilityCheckUpdates;
@@ -60,6 +63,7 @@ struct RuntimeUserConfig {
     std::optional<int32_t> accessibilityKartVolume;
     std::optional<int32_t> accessibilityRivalKartVolume;
     std::optional<int32_t> accessibilityItemRouletteVolume;
+    std::map<std::string, int32_t> accessibilityCueVolumes;  // "<cue>_cue_volume" percents
     std::optional<bool> audioMixWorker;
     std::optional<bool> attenuateMusicWhenMediaPlays;
     // Real Wii Remotes (with or without Nunchuk / Classic Controller) and Wii U Pro
@@ -369,7 +373,15 @@ inline void EnsureConfigFile() {
               "# section applies while the game is running: save the file and the mod says\n"
               "# \"settings reloaded\" a couple of seconds later.\n"
               "# The steering guide pans the game's own engine note towards the side to steer\n"
-              "# AWAY from. Its reaction time and pan response adapt to the kart's real speed.\n"
+              "# AWAY from. The defaults are the play-tested law; all three are also on the F8 menu.\n"
+              "# Ceiling of the pan, 0-100: 100 is hard left / hard right.\n"
+              "steering_strength = 40\n"
+              "# How far ahead in TIME the mod looks: 0.10 s at 0, the play-tested 0.79 s at 100,\n"
+              "# about 1.5 s at 200. Moves the guide's horizon and the edge cue's margin together.\n"
+              "steering_look_ahead = 100\n"
+              "# Degrees off the aim point at which the pan is at its ceiling, 5-90. Lower is a\n"
+              "# wider swing for the same corner.\n"
+              "steering_lean_angle = 30\n"
               "invert_steering_pan = false\n"
               "# Which line the guide follows: \"cpu\" (the CPU drivers' route - the default,\n"
               "# and the one every play-test of the guide has run on) or \"item\" (the route red\n"
@@ -385,7 +397,13 @@ inline void EnsureConfigFile() {
               "# hear your own engine - which is what the steering guide speaks through.\n"
               "kart_volume = 180\n"
               "rival_kart_volume = 20\n"
-              "item_roulette_volume = 100\n\n"
+              "item_roulette_volume = 100\n"
+              "# Volume of each accessibility cue family, 0-100. Also set from the F8 menu.\n"
+              "edge_cue_volume = 100\n"
+              "surface_cue_volume = 100\n"
+              "curve_cue_volume = 100\n"
+              "countdown_cue_volume = 100\n"
+              "item_box_cue_volume = 100\n\n"
               "[discord]\n"
               "# Rich Presence talks only to a locally-running Discord client.\n"
               "# Retro Rewind supplies its official app ID automatically. Set this\n"
@@ -425,6 +443,30 @@ inline std::optional<int32_t> FindConfigInt(
         return std::nullopt;
     }
     return static_cast<int32_t>(*value);
+}
+
+// The mod's "<cue>_cue_volume" percent knobs, gathered by suffix so the list of cue families
+// lives with the cue code (accessibility/audio/cue_volume.cpp) and not here.
+inline constexpr std::string_view kAccessibilityCueVolumeSuffix = "_cue_volume";
+inline constexpr int32_t kAccessibilityCueVolumeMax = 100;
+
+inline std::map<std::string, int32_t> FindAccessibilityCueVolumes(const toml::value& document) {
+    std::map<std::string, int32_t> volumes;
+    try {
+        for (const auto& [key, value] : toml::find(document, "accessibility").as_table()) {
+            const std::string_view suffix = kAccessibilityCueVolumeSuffix;
+            if (key.size() <= suffix.size() ||
+                std::string_view(key).substr(key.size() - suffix.size()) != suffix ||
+                !value.is_integer()) {
+                continue;
+            }
+            volumes[key] = static_cast<int32_t>(std::clamp<int64_t>(
+                value.as_integer(), 0, kAccessibilityCueVolumeMax));
+        }
+    } catch (const std::exception&) {
+        // No [accessibility] table: nothing to gather.
+    }
+    return volumes;
 }
 
 inline std::optional<float> FindConfigFloat(
@@ -532,6 +574,12 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.audioUiVolume = readVolume("ui_volume");
     config.audioVoicesVolume = readVolume("voices_volume");
     config.audioMuted = FindConfigValue<bool>(document, "audio", "muted");
+    config.accessibilitySteeringStrength =
+        FindConfigInt(document, "accessibility", "steering_strength");
+    config.accessibilitySteeringLookAhead =
+        FindConfigInt(document, "accessibility", "steering_look_ahead");
+    config.accessibilitySteeringLeanAngle =
+        FindConfigInt(document, "accessibility", "steering_lean_angle");
     config.accessibilityInvertSteeringPan =
         FindConfigValue<bool>(document, "accessibility", "invert_steering_pan");
     config.accessibilityEdgeCues =
@@ -545,6 +593,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigInt(document, "accessibility", "rival_kart_volume");
     config.accessibilityItemRouletteVolume =
         FindConfigInt(document, "accessibility", "item_roulette_volume");
+    config.accessibilityCueVolumes = FindAccessibilityCueVolumes(document);
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
@@ -843,6 +892,30 @@ inline bool SetAudioMuted(bool value) {
     return WriteSetting("audio", "muted", value ? "true" : "false");
 }
 
+// Ranges of the steering guide's knobs; the getters and setters below must agree.
+inline constexpr int32_t kSteeringStrengthMax = 100;
+inline constexpr int32_t kSteeringLookAheadMax = 200;
+inline constexpr int32_t kSteeringLeanAngleMin = 5;
+inline constexpr int32_t kSteeringLeanAngleMax = 90;
+
+inline bool SetAccessibilitySteeringStrength(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, kSteeringStrengthMax);
+    Mutable().accessibilitySteeringStrength = clamped;
+    return WriteSetting("accessibility", "steering_strength", std::to_string(clamped));
+}
+
+inline bool SetAccessibilitySteeringLookAhead(int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, kSteeringLookAheadMax);
+    Mutable().accessibilitySteeringLookAhead = clamped;
+    return WriteSetting("accessibility", "steering_look_ahead", std::to_string(clamped));
+}
+
+inline bool SetAccessibilitySteeringLeanAngle(int32_t value) {
+    const int32_t clamped = std::clamp(value, kSteeringLeanAngleMin, kSteeringLeanAngleMax);
+    Mutable().accessibilitySteeringLeanAngle = clamped;
+    return WriteSetting("accessibility", "steering_lean_angle", std::to_string(clamped));
+}
+
 inline bool SetAccessibilityInvertSteeringPan(bool value) {
     Mutable().accessibilityInvertSteeringPan = value;
     return WriteSetting("accessibility", "invert_steering_pan", value ? "true" : "false");
@@ -869,6 +942,12 @@ inline bool SetAccessibilityItemRouletteVolume(int32_t value) {
     const int32_t clamped = std::clamp(value, 0, 100);
     Mutable().accessibilityItemRouletteVolume = clamped;
     return WriteSetting("accessibility", "item_roulette_volume", std::to_string(clamped));
+}
+
+inline bool SetAccessibilityCueVolume(std::string_view key, int32_t value) {
+    const int32_t clamped = std::clamp(value, 0, kAccessibilityCueVolumeMax);
+    Mutable().accessibilityCueVolumes[std::string(key)] = clamped;
+    return WriteSetting("accessibility", key, std::to_string(clamped));
 }
 
 inline bool SetAudioMixWorker(bool value) {
@@ -947,6 +1026,23 @@ inline bool AccessibilityEdgeCues(bool fallback = true) {
 // re-decides this: under the previous two-term law the validated value was true. What is pinned
 // is the END-TO-END product (kRightIsPositive x the law's sign x this default); flip THIS
 // setting for the other meaning, never the audio constant.
+// The steering guide's knobs. Defaults are the play-tested law (b479c0e: 0.4 ceiling, 0.79 s,
+// 30 degrees); the template above must agree, or a config missing a key differs from a fresh one.
+inline int32_t AccessibilitySteeringStrength(int32_t fallback = 40) {
+    return std::clamp(Get().accessibilitySteeringStrength.value_or(fallback), 0,
+                      kSteeringStrengthMax);
+}
+
+inline int32_t AccessibilitySteeringLookAhead(int32_t fallback = 100) {
+    return std::clamp(Get().accessibilitySteeringLookAhead.value_or(fallback), 0,
+                      kSteeringLookAheadMax);
+}
+
+inline int32_t AccessibilitySteeringLeanAngle(int32_t fallback = 30) {
+    return std::clamp(Get().accessibilitySteeringLeanAngle.value_or(fallback),
+                      kSteeringLeanAngleMin, kSteeringLeanAngleMax);
+}
+
 inline bool AccessibilityInvertSteeringPan(bool fallback = false) {
     return Get().accessibilityInvertSteeringPan.value_or(fallback);
 }
@@ -988,6 +1084,15 @@ inline int32_t AccessibilityRivalKartVolume(int32_t fallback = 20) {
 // everything else, so this per-sound knob exists instead of asking the player to lower ui_volume.
 inline int32_t AccessibilityItemRouletteVolume(int32_t fallback = 100) {
     return std::clamp(Get().accessibilityItemRouletteVolume.value_or(fallback), 0, 100);
+}
+
+// One accessibility cue family's level by its "<cue>_cue_volume" key, 0-100.
+inline int32_t AccessibilityCueVolume(std::string_view key,
+                                      int32_t fallback = kAccessibilityCueVolumeMax) {
+    const auto& volumes = Get().accessibilityCueVolumes;
+    const auto found = volumes.find(std::string(key));
+    return std::clamp(found == volumes.end() ? fallback : found->second, 0,
+                      kAccessibilityCueVolumeMax);
 }
 
 // Off-thread AX/DSP mix. Default on; false restores the fully synchronous mix.

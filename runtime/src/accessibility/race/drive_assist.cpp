@@ -4,6 +4,7 @@
 #include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
+#include "accessibility/race/guide_tuning.h"
 #include "accessibility/race/heading.h"
 #include "accessibility/race/race_state.h"
 
@@ -11,10 +12,9 @@ namespace a11y::race {
 namespace {
 // ~100 ms is the 60 fps equivalent of the play-tested 0.15-per-frame filter, kept as a time.
 constexpr float kPanSmoothTauSec = 0.1f;
-// The bearing that is the whole lean: 30 degrees, Forza's own at-speed threshold for "way off the
-// line" (`assistfocuscarangletolookahead_minpointspeedramped`). Scaled by angle, not by road, so a
-// normal corner's aim point sits near the full lean, a gentle bend halfway, a drift a few degrees.
-constexpr float kFullLeanRad = 30.0f * (3.14159265f / 180.0f);
+// The bearing that is the whole lean (GuideFullLeanRad, default 30 degrees, Forza's own at-speed
+// threshold for "way off the line", `assistfocuscarangletolookahead_minpointspeedramped`) scales
+// by angle, not by road: a normal corner's aim point sits near it, a gentle bend halfway.
 // Astern hysteresis on the +-180 degree seam, from the edge-recovery work (2026-09-09).
 constexpr float kAsternEnterRad = 150.0f * (3.14159265f / 180.0f);
 constexpr float kAsternExitRad = 120.0f * (3.14159265f / 180.0f);
@@ -84,7 +84,7 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
                 mAstern = false;
                 mAsternPanSign = sign;
             }
-            pan = sign * std::min(std::fabs(bearing) / kFullLeanRad, 1.0f) * kGuideMaxPan;
+            pan = sign * std::min(std::fabs(bearing) / GuideFullLeanRad(), 1.0f) * GuideMaxPan();
             mLastBearingDeg = bearing * (180.0f / 3.14159265f);
             mLastHorizonUnits = horizon;
         }

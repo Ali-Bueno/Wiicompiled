@@ -50,6 +50,7 @@ constexpr float kExitPitch = 1.5f;
 constexpr int kExitPhase = 3;
 constexpr float kBeepPan = 0.8f;
 constexpr float kDemoCurvePan = 0.7f;
+constexpr int kDemoApproachStage = 0;  // the first of the three countdown beeps
 
 // One key per whole call ("curve_hard_right_long"), so each language file states the exact
 // phrase and word order, gender and agreement never leak into code.
@@ -104,6 +105,10 @@ float LeadSeconds(float distance, float speed) {
 }
 
 }  // namespace
+
+void PlayCountdownCueDemo() {
+    CueService::Instance().PlayOneShot(CueChannel::Countdown, ApproachBeep(kDemoApproachStage));
+}
 
 void PlayCurveCueDemo() {
     CueSpec beep = LandmarkBeep(kLandmarkPitch, true);

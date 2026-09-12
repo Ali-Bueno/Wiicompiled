@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "accessibility/audio/cue_volume.h"
 #include "accessibility/localization.h"
 #include "accessibility/race/race_manager.h"
 #include "accessibility/screen_reader.h"
@@ -65,12 +66,22 @@ void ConfigReloadTick() {
         }
     };
     const bool lineWasItem = RuntimeConfigFile::AccessibilityLineFromItemRoute();
+    apply(live.accessibilitySteeringStrength, fresh.accessibilitySteeringStrength);
+    apply(live.accessibilitySteeringLookAhead, fresh.accessibilitySteeringLookAhead);
+    apply(live.accessibilitySteeringLeanAngle, fresh.accessibilitySteeringLeanAngle);
     apply(live.accessibilityInvertSteeringPan, fresh.accessibilityInvertSteeringPan);
     apply(live.accessibilityEdgeCues, fresh.accessibilityEdgeCues);
     apply(live.accessibilityLineSource, fresh.accessibilityLineSource);
     apply(live.accessibilityKartVolume, fresh.accessibilityKartVolume);
     apply(live.accessibilityRivalKartVolume, fresh.accessibilityRivalKartVolume);
     apply(live.accessibilityItemRouletteVolume, fresh.accessibilityItemRouletteVolume);
+    for (const auto& [key, percent] : fresh.accessibilityCueVolumes) {
+        const auto found = live.accessibilityCueVolumes.find(key);
+        if (found == live.accessibilityCueVolumes.end() || found->second != percent) {
+            live.accessibilityCueVolumes[key] = percent;
+            changed = true;
+        }
+    }
     if (!changed) {
         return;  // spoken only when something audible really changed
     }
@@ -80,6 +91,7 @@ void ConfigReloadTick() {
         race::InvalidateCourseMap();
     }
 
+    audio::LoadCueVolumes();
     ScreenReader::Instance().Speak(loc::Get("settings_reloaded"), /*interrupt=*/true);
 }
 

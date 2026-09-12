@@ -12,8 +12,7 @@ struct Curve;
 
 // Forza's steering guide: the engine leans by the bearing from the kart to an aim point on the safe
 // line one anticipation time ahead, and nothing else. Spoken calls and countdowns announce corners.
-// Play-tested 40-percent maximum engine pan, fixed across vehicles (2026-08-27 to 2026-09-07).
-inline constexpr float kGuideMaxPan = 0.4f;
+// Its ceiling, lean angle and horizon are the player's knobs in guide_tuning.h.
 
 class DriveAssist {
 public:
@@ -63,6 +62,8 @@ private:
 
 // Menu preview: plays a representative corner-entry beep.
 void PlayCurveCueDemo();
+// Menu preview: one beep of the corner countdown.
+void PlayCountdownCueDemo();
 
 }  // namespace a11y::race
 

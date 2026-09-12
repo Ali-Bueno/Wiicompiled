@@ -6,6 +6,7 @@
 #include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/edge_map.h"
+#include "accessibility/race/guide_tuning.h"
 #include "accessibility/race/heading.h"
 #include "accessibility/race/motion_prediction.h"
 #include "accessibility/race/race_state.h"
@@ -125,6 +126,11 @@ CueSpec SurfaceChangeCue(bool offRoad, bool right) {
     note.pan = offRoad ? (right ? kEdgePan : -kEdgePan) : 0.0f;
     note.durationSec = kSurfaceChangeSec;
     return note;
+}
+
+void PlaySurfaceCueDemo() {
+    CueService::Instance().PlayOneShot(CueChannel::Surface,
+                                       SurfaceChangeCue(/*offRoad=*/true, /*right=*/true));
 }
 
 void PlayEdgeCueDemo() {

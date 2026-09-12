@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "accessibility/audio/cue_volume.h"
 #include "accessibility/localization.h"
 #include "accessibility/menu/settings_menu.h"
 #include "accessibility/race/drive_assist.h"
@@ -46,8 +47,35 @@ std::string KnobPercentText(int value) {
     return loc::Format("percent", {{"n", std::to_string(value)}});
 }
 
+std::string DegreesText(int value) {
+    return loc::Format("degrees", {{"n", std::to_string(value)}});
+}
+
 std::string OnOffText(bool value) {
     return loc::Get(value ? "value_on" : "value_off");
+}
+
+// The same previews the demo rows play, so a knob is heard at its new level as it moves.
+void PlayCueDemo(audio::CueChannel channel) {
+    switch (channel) {
+        case audio::CueChannel::Edge:
+            race::PlayEdgeCueDemo();
+            break;
+        case audio::CueChannel::Surface:
+            race::PlaySurfaceCueDemo();
+            break;
+        case audio::CueChannel::Curve:
+            race::PlayCurveCueDemo();
+            break;
+        case audio::CueChannel::Countdown:
+            race::PlayCountdownCueDemo();
+            break;
+        case audio::CueChannel::ItemBox:
+            race::PlayItemBoxCueDemo();
+            break;
+        default:
+            break;
+    }
 }
 
 }  // namespace
@@ -113,6 +141,22 @@ void SettingsMenu::BuildOptions() {
          },
          nullptr});
 
+    // One knob per cue family, applied live and saved; each step replays the cue so it is
+    // tuned by ear at the new level.
+    size_t knobCount = 0;
+    const audio::CueVolumeKnob* knobs = audio::CueVolumeKnobs(knobCount);
+    for (size_t i = 0; i < knobCount; ++i) {
+        const audio::CueChannel channel = knobs[i].channel;
+        mOptions.push_back({std::string("opt_") + knobs[i].configKey,
+                            [channel] { return KnobPercentText(audio::CueVolumePercent(channel)); },
+                            [channel](int dir) {
+                                audio::SetCueVolumePercent(
+                                    channel, StepKnob(audio::CueVolumePercent(channel), dir));
+                                PlayCueDemo(channel);
+                            },
+                            nullptr});
+    }
+
     const auto toggleInvert = [] {
         RuntimeConfigFile::SetAccessibilityInvertSteeringPan(
             !RuntimeConfigFile::AccessibilityInvertSteeringPan());
@@ -121,6 +165,36 @@ void SettingsMenu::BuildOptions() {
                         [] { return OnOffText(RuntimeConfigFile::AccessibilityInvertSteeringPan()); },
                         [toggleInvert](int) { toggleInvert(); },
                         toggleInvert});
+
+    // The steering guide's knobs, read by the guide on every frame, so persisting is enough.
+    mOptions.push_back(
+        {"opt_steering_strength",
+         [] { return KnobPercentText(RuntimeConfigFile::AccessibilitySteeringStrength()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringStrength(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringStrength(), dir,
+                          RuntimeConfigFile::kSteeringStrengthMax));
+         },
+         nullptr});
+    mOptions.push_back(
+        {"opt_look_ahead",
+         [] { return KnobPercentText(RuntimeConfigFile::AccessibilitySteeringLookAhead()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringLookAhead(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringLookAhead(), dir,
+                          RuntimeConfigFile::kSteeringLookAheadMax));
+         },
+         nullptr});
+    // The setter's own clamp holds the floor, so stepping below it just stays there.
+    mOptions.push_back(
+        {"opt_steering_lean_angle",
+         [] { return DegreesText(RuntimeConfigFile::AccessibilitySteeringLeanAngle()); },
+         [](int dir) {
+             RuntimeConfigFile::SetAccessibilitySteeringLeanAngle(
+                 StepKnob(RuntimeConfigFile::AccessibilitySteeringLeanAngle(), dir,
+                          RuntimeConfigFile::kSteeringLeanAngleMax));
+         },
+         nullptr});
 
     const auto toggleEdge = [] {
         RuntimeConfigFile::SetAccessibilityEdgeCues(!RuntimeConfigFile::AccessibilityEdgeCues());

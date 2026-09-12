@@ -11,6 +11,8 @@ namespace a11y::race {
 // The player settled at 0.79 s in play-testing. Keeping it as a time makes the same response work
 // from 50cc through 500cc: speed changes the distance, never the time available to react.
 inline constexpr float kAnticipationSec = 0.79f;
+// The look-ahead knob's floor: below a tenth of a second the aim point is under the kart.
+inline constexpr float kMinAnticipationSec = 0.10f;
 
 // The longest lead any spoken instruction is planned at: the corner call has to land, be understood
 // and still leave time to act - a play-test found 2.5 s arriving half a second late. Wrong-way
@@ -30,10 +32,6 @@ inline constexpr float kReferenceSpeedUnitsPerSec = 79.77f * 50.0f;
 // A straight is a gap the whole countdown fits in at the reference speed; a shorter gap chains
 // the next corner to the previous one (it becomes a follower: no call of its own, no countdown).
 inline constexpr float kStraightUnits = kReferenceSpeedUnitsPerSec * kCountdownLeadSec[0];
-
-inline constexpr float AnticipationSeconds() {
-    return kAnticipationSec;
-}
 
 }  // namespace a11y::race
 
