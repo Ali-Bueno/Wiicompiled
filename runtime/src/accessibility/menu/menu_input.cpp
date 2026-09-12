@@ -1,7 +1,9 @@
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keyboard.h>
 
 #include "accessibility/a11y_log.h"
 #include "accessibility/accessibility.h"
+#include "accessibility/guest_text.h"
 #include "accessibility/menu/settings_menu.h"
 #include "accessibility/update_check.h"
 #include "aurora/event.h"
@@ -75,10 +77,49 @@ bool IsAnswerKey(SDL_Scancode code) {
            code == SDL_SCANCODE_ESCAPE;
 }
 
+// The Mii name holds UTF-16 units, so a character past the Basic Multilingual Plane (two units)
+// is not typed; no keyboard layout produces one from a single key anyway.
+constexpr SDL_Keycode kLastSingleUnitCodepoint = 0xFFFF;
+
+// A row is taking text: keys spell instead of navigating. The character is the layout's own for
+// the key with the modifiers held, so shift and AltGr spell what they would in any text field;
+// keys without one (F-keys, arrows) carry the scancode mask and are dropped.
+void OnTextKey(const SDL_KeyboardEvent& event, SettingsMenu& menuInstance) {
+    switch (event.scancode) {
+        case SDL_SCANCODE_RETURN:
+        case SDL_SCANCODE_KP_ENTER:
+            if (!event.repeat) {
+                menuInstance.Enqueue(MenuAction::Activate);
+            }
+            return;
+        case SDL_SCANCODE_ESCAPE:
+            if (!event.repeat) {
+                menuInstance.Enqueue(MenuAction::Back);
+            }
+            return;
+        case SDL_SCANCODE_BACKSPACE:
+            menuInstance.Enqueue(MenuAction::Backspace);
+            return;
+        default:
+            break;
+    }
+    const SDL_Keycode key = SDL_GetKeyFromScancode(event.scancode, event.mod, /*key_event=*/false);
+    if ((key & SDLK_SCANCODE_MASK) != 0 || key < SDLK_SPACE || key == SDLK_DELETE ||
+        key > kLastSingleUnitCodepoint) {
+        return;
+    }
+    menuInstance.Enqueue(MenuAction::Text,
+                         Utf16ToUtf8(std::u16string(1, static_cast<char16_t>(key))));
+}
+
 void OnKey(const SDL_KeyboardEvent& event) {
     SettingsMenu& menuInstance = SettingsMenu::Instance();
     if (event.scancode == SDL_SCANCODE_F8 && !event.repeat) {
         menuInstance.Enqueue(MenuAction::Toggle);
+        return;
+    }
+    if (menuInstance.IsOpen() && menuInstance.IsEditingText()) {
+        OnTextKey(event, menuInstance);
         return;
     }
     // An unanswered update question owns those two keys, and only while the menu is closed.

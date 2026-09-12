@@ -1,59 +1,18 @@
 #include "accessibility/menu/settings_menu.h"
 
-#include <algorithm>
-#include <cmath>
-
 #include "accessibility/localization.h"
-#include "accessibility/race/drive_assist.h"
-#include "accessibility/race/item_beacon.h"
+#include "accessibility/mii/mii_identity.h"
 #include "accessibility/race/race_state.h"
-#include "accessibility/race/track_limits.h"
 #include "accessibility/screen_reader.h"
-#include "audio_backend.h"
 #include "dolphin/pad.h"
-#include "music_attenuation.h"
 #include "runtime_config.h"
 
 namespace a11y::menu {
 namespace {
 
-// One click of left/right. Fine enough to tune by ear, coarse enough that sweeping the whole
-// range is a handful of presses, matching the F10 bar's percent sliders.
-constexpr int kStepPercent = 5;
-
 // A row's description lives under its own name key plus this suffix, so a new option carries its
 // explanation by naming convention rather than by a second field nobody remembers to fill.
 constexpr const char* kHelpKeySuffix = "_help";
-
-int ToPercent(float value) {
-    return static_cast<int>(std::lround(std::clamp(value, 0.0f, 1.0f) * 100.0f));
-}
-
-// Snaps to the step grid first so a value written by hand in Config.toml still moves cleanly.
-float StepVolume(float value, int direction) {
-    const int snapped =
-        static_cast<int>(std::lround(static_cast<float>(ToPercent(value)) / kStepPercent)) *
-        kStepPercent;
-    return static_cast<float>(std::clamp(snapped + direction * kStepPercent, 0, 100)) / 100.0f;
-}
-
-int StepKnob(int value, int direction, int max = 100) {
-    const int snapped =
-        static_cast<int>(std::lround(static_cast<float>(value) / kStepPercent)) * kStepPercent;
-    return std::clamp(snapped + direction * kStepPercent, 0, max);
-}
-
-std::string PercentText(float value) {
-    return loc::Format("percent", {{"n", std::to_string(ToPercent(value))}});
-}
-
-std::string KnobPercentText(int value) {
-    return loc::Format("percent", {{"n", std::to_string(value)}});
-}
-
-std::string OnOffText(bool value) {
-    return loc::Get(value ? "value_on" : "value_off");
-}
 
 void Say(const std::string& text) {
     // Interrupting keeps the reader on the cursor while scrubbing; queued speech lagged a value
@@ -68,93 +27,26 @@ SettingsMenu& SettingsMenu::Instance() {
     return instance;
 }
 
-void SettingsMenu::Enqueue(MenuAction action) {
+void SettingsMenu::Enqueue(MenuAction action, std::string text) {
     std::lock_guard<std::mutex> lock(mQueueMutex);
-    mQueue.push_back(action);
+    mQueue.push_back({action, std::move(text)});
 }
 
 void SettingsMenu::Tick() {
-    std::vector<MenuAction> actions;
+    std::vector<MenuInput> inputs;
     {
         std::lock_guard<std::mutex> lock(mQueueMutex);
-        actions.swap(mQueue);
+        inputs.swap(mQueue);
     }
-    for (MenuAction action : actions) {
-        Apply(action);
+    for (const MenuInput& input : inputs) {
+        Apply(input);
     }
-}
-
-void SettingsMenu::BuildOptions() {
-    if (mBuilt) {
-        return;
+    // The F10 bar rewrites PADBlockInput from its own state every frame, just before this tick
+    // (settings_overlay.cpp Draw), so the block only holds if it is re-asserted here. On close
+    // that same write releases it, and swallows the keys still held.
+    if (mOpen) {
+        PADBlockInput(true);
     }
-    mBuilt = true;
-
-    // Live-apply + persist, the exact pair the F10 sliders do (settings_overlay.cpp:493): the
-    // config setters alone only write the file, they never touch the running audio objects.
-    mOptions.push_back({"opt_master_volume",
-                        [] { return PercentText(RuntimeConfigFile::AudioVolume()); },
-                        [](int dir) {
-                            const float v = StepVolume(RuntimeConfigFile::AudioVolume(), dir);
-                            AudioBackend::Instance().SetMasterVolume(v);
-                            RuntimeConfigFile::SetAudioVolume(v);
-                        },
-                        nullptr});
-    mOptions.push_back({"opt_music_volume",
-                        [] { return PercentText(RuntimeConfigFile::MusicVolume()); },
-                        [](int dir) {
-                            const float v = StepVolume(RuntimeConfigFile::MusicVolume(), dir);
-                            MusicAttenuation::SetMusicVolume(v);
-                            RuntimeConfigFile::SetMusicVolume(v);
-                        },
-                        nullptr});
-
-    // Applied per frame by KartVolume, so persisting the knob is all a change needs. The player's
-    // own kart reaches 200%: past 100 the write boosts (the voice clamps the end product).
-    mOptions.push_back({"opt_kart_volume",
-                        [] { return KnobPercentText(RuntimeConfigFile::AccessibilityKartVolume()); },
-                        [](int dir) {
-                            RuntimeConfigFile::SetAccessibilityKartVolume(StepKnob(
-                                RuntimeConfigFile::AccessibilityKartVolume(), dir, /*max=*/200));
-                        },
-                        nullptr});
-    mOptions.push_back(
-        {"opt_rival_volume",
-         [] { return KnobPercentText(RuntimeConfigFile::AccessibilityRivalKartVolume()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilityRivalKartVolume(
-                 StepKnob(RuntimeConfigFile::AccessibilityRivalKartVolume(), dir));
-         },
-         nullptr});
-    mOptions.push_back(
-        {"opt_roulette_volume",
-         [] { return KnobPercentText(RuntimeConfigFile::AccessibilityItemRouletteVolume()); },
-         [](int dir) {
-             RuntimeConfigFile::SetAccessibilityItemRouletteVolume(
-                 StepKnob(RuntimeConfigFile::AccessibilityItemRouletteVolume(), dir));
-         },
-         nullptr});
-
-    const auto toggleInvert = [] {
-        RuntimeConfigFile::SetAccessibilityInvertSteeringPan(
-            !RuntimeConfigFile::AccessibilityInvertSteeringPan());
-    };
-    mOptions.push_back({"opt_invert_pan",
-                        [] { return OnOffText(RuntimeConfigFile::AccessibilityInvertSteeringPan()); },
-                        [toggleInvert](int) { toggleInvert(); },
-                        toggleInvert});
-
-    const auto toggleEdge = [] {
-        RuntimeConfigFile::SetAccessibilityEdgeCues(!RuntimeConfigFile::AccessibilityEdgeCues());
-    };
-    mOptions.push_back({"opt_edge_cues",
-                        [] { return OnOffText(RuntimeConfigFile::AccessibilityEdgeCues()); },
-                        [toggleEdge](int) { toggleEdge(); },
-                        toggleEdge});
-
-    mOptions.push_back({"demo_edge", nullptr, nullptr, [] { race::PlayEdgeCueDemo(); }});
-    mOptions.push_back({"demo_curve", nullptr, nullptr, [] { race::PlayCurveCueDemo(); }});
-    mOptions.push_back({"demo_itembox", nullptr, nullptr, [] { race::PlayItemBoxCueDemo(); }});
 }
 
 void SettingsMenu::Open() {
@@ -167,7 +59,6 @@ void SettingsMenu::Open() {
     BuildOptions();
     mOpen = true;
     mFocus = 0;
-    PADBlockInput(true);
     Say(loc::Get("menu_opened"));
     // Queued, so the welcome line is heard before the first row.
     SpeakFocused(/*withName=*/true, /*interrupt=*/false);
@@ -175,8 +66,51 @@ void SettingsMenu::Open() {
 
 void SettingsMenu::Close() {
     mOpen = false;
-    PADBlockInput(false);
+    mEditing.store(false, std::memory_order_relaxed);
     Say(loc::Get("menu_closed"));
+}
+
+void SettingsMenu::BeginNameEdit() {
+    mEditing.store(true, std::memory_order_relaxed);
+    mNameEntry.Begin(RuntimeConfigFile::MiiName());
+}
+
+void SettingsMenu::EndNameEdit(bool save) {
+    mEditing.store(false, std::memory_order_relaxed);
+    const std::string name = save ? mNameEntry.Draft() : std::string();
+    if (name.empty()) {
+        Say(loc::Get("name_unchanged"));
+        return;
+    }
+    if (!RuntimeConfigFile::SetMiiName(name)) {
+        Say(loc::Get("name_save_failed"));
+        return;
+    }
+    // The database record and the licence follow on the next mii tick.
+    mii::Refresh();
+    Say(loc::Format("name_saved", {{"name", name}}));
+}
+
+void SettingsMenu::ApplyEditing(const MenuInput& input) {
+    switch (input.action) {
+        case MenuAction::Toggle:
+            Close();
+            break;
+        case MenuAction::Back:
+            EndNameEdit(/*save=*/false);
+            break;
+        case MenuAction::Activate:
+            EndNameEdit(/*save=*/true);
+            break;
+        case MenuAction::Backspace:
+            mNameEntry.Backspace();
+            break;
+        case MenuAction::Text:
+            mNameEntry.Type(input.text);
+            break;
+        default:
+            break;  // arrows spell nothing
+    }
 }
 
 void SettingsMenu::SpeakFocused(bool withName, bool interrupt) {
@@ -207,13 +141,18 @@ void SettingsMenu::SpeakFocused(bool withName, bool interrupt) {
     }
 }
 
-void SettingsMenu::Apply(MenuAction action) {
+void SettingsMenu::Apply(const MenuInput& input) {
     if (!mOpen) {
-        if (action == MenuAction::Toggle) {
+        if (input.action == MenuAction::Toggle) {
             Open();
         }
         return;
     }
+    if (IsEditingText()) {
+        ApplyEditing(input);
+        return;
+    }
+    const MenuAction action = input.action;
     switch (action) {
         case MenuAction::Toggle:
         case MenuAction::Back:
@@ -240,12 +179,15 @@ void SettingsMenu::Apply(MenuAction action) {
             Option& option = mOptions[static_cast<size_t>(mFocus)];
             if (option.activate) {
                 option.activate();
-                if (option.value) {
+                // A row that started taking text has just spoken its instructions.
+                if (option.value && !IsEditingText()) {
                     SpeakFocused(/*withName=*/false, /*interrupt=*/true);
                 }
             }
             break;
         }
+        default:
+            break;  // Backspace and Text only exist while a row takes text
     }
 }
 

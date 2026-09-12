@@ -117,10 +117,15 @@ void MigrateLicense() {
 }  // namespace
 
 void Init() {
+    Refresh();
+}
+
+void Refresh() {
     const std::u16string configured = Utf8ToUtf16(RuntimeConfigFile::MiiName());
     if (configured.empty()) {
         return;
     }
+    g_name.fill(0);
     for (std::size_t k = 0; k < g_name.size() && k < configured.size(); ++k) {
         g_name[k] = configured[k];
     }

@@ -105,18 +105,24 @@ what it does.
 
 Rows, in order:
 
-1. master volume
-2. music volume
-3. my kart volume (0 to 200)
-4. rival karts volume
-5. item roulette volume
-6. invert steering pan
-7. edge cues (on/off)
-8. hear the edge tone
-9. hear a curve beep
-10. hear the item box
+1. online name
+2. master volume
+3. music volume
+4. my kart volume (0 to 200)
+5. rival karts volume
+6. item roulette volume
+7. invert steering pan
+8. edge cues (on/off)
+9. hear the edge tone
+10. hear a curve beep
+11. hear the item box
 
 The last three just play the sound so you know what to listen for.
+
+"Online name" is the name other players see and the name of your Mii, up to 10 characters.
+Press A on the row, type the name on the keyboard (each letter is read back, Backspace deletes
+the last one) and press Enter to save it; Escape keeps the old name. It applies at once, no
+restart needed, and it is the same name the installer asked for.
 
 About "invert steering pan": by default the engine sounds on the side you must steer *away*
 from. Some people would rather drive toward the sound, like following a guide. Turning this on

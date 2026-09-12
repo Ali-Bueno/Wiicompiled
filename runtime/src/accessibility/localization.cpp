@@ -79,6 +79,18 @@ constexpr Phrase kEnglishDefaults[] = {
      "accessibility settings. Up and down to choose, left and right to adjust, A to activate, B to close."},
     {"menu_closed", "settings closed"},
     {"menu_race_blocked", "settings open from the menus, not during a race"},
+    {"opt_mii_name", "online name"},
+    {"name_unset", "not set"},
+    {"name_edit_begin",
+     "type the name, up to {n} characters, then press Enter. Escape keeps the current one. Current "
+     "name: {name}"},
+    {"name_edit_full", "the name is full"},
+    {"name_edit_empty", "nothing to delete"},
+    {"name_deleted", "{c} deleted"},
+    {"name_saved", "name saved: {name}"},
+    {"name_unchanged", "name unchanged"},
+    {"name_save_failed", "the name could not be saved"},
+    {"char_space", "space"},
     {"opt_master_volume", "master volume"},
     {"opt_music_volume", "music volume"},
     {"opt_kart_volume", "my kart volume"},
@@ -92,6 +104,9 @@ constexpr Phrase kEnglishDefaults[] = {
 
     // Spoken after the row's name and value. One "<key>_help" per option, by the naming
     // convention settings_menu.cpp uses; a row without one simply reads name and value.
+    {"opt_mii_name_help",
+     "The name other players see online; your Mii carries it. Press A, type it on the keyboard "
+     "and press Enter."},
     {"opt_master_volume_help",
      "Volume of the whole game: engine, music and effects together. Screen reader speech is not "
      "affected."},

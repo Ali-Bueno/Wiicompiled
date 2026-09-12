@@ -1077,6 +1077,23 @@ inline std::string MiiName() {
     return Get().miiName.value_or(std::string());
 }
 
+// Written as a TOML basic string; control characters are dropped, the two escapes applied.
+inline bool SetMiiName(const std::string& value) {
+    std::string quoted = "\"";
+    for (const char c : value) {
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) {
+            continue;
+        }
+        if (c == '\\' || c == '"') {
+            quoted += '\\';
+        }
+        quoted += c;
+    }
+    quoted += '"';
+    Mutable().miiName = value;
+    return WriteSetting("system", "mii_name", quoted);
+}
+
 inline bool SetSystemLanguage(int32_t value) {
     if (value < kSystemLanguageMin || value > kSystemLanguageMax) {
         return false;

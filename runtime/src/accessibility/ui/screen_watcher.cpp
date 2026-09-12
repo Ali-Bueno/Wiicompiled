@@ -176,14 +176,14 @@ void CollectChangedLabels(const std::vector<std::uint32_t>& labels, bool learn,
 
 // Arriving on a screen.
 //
-// A screen with a cursor announces the item under it, and nothing else. Reciting the whole page is
-// what the spec forbids by name, and reading every label was doing exactly that - the main menu
-// listed all four of its buttons before saying which one was selected. The full label set is still
-// snapshot, because the next cursor move needs something to diff against.
+// A screen with a cursor announces its own text - a dialog's title and message, a heading - and
+// then the item under the cursor. Its buttons are never part of that text: reciting them is what
+// the spec forbids by name, and it happened once, when the main menu's four buttons were taken for
+// labels because the selectable list had not read. The full label set is still snapshot, because
+// the next cursor move needs something to diff against.
 //
-// A screen with nothing selectable at all - the strap warning, the title screen's "press A" - is the
-// one case that does read everything, because there is no navigation to follow and silence would
-// look like a freeze.
+// A screen with nothing selectable at all - the strap warning, the title screen's "press A" - reads
+// everything, because there is no navigation to follow and silence would look like a freeze.
 //
 // The test is whether the page has selectable controls, NOT whether one is focused right now. On the
 // frame a page settles the manipulator often has not picked its initial control yet, and reading
@@ -223,6 +223,8 @@ void AnnounceScreen(const std::vector<std::uint32_t>& layers, std::uint32_t page
         if (focusedText.empty() && itemParts.empty() && WaitingForName(page)) {
             return;  // the page stays uncommitted, so the next frame comes back here
         }
+        // Message before button, the order a dialog is read (docs/menu-accessibility.md §2).
+        parts = std::move(screenParts);
         parts.push_back(focusedText);
         parts.insert(parts.end(), itemParts.begin(), itemParts.end());
         parts.push_back(DescribeFocusedEntity(layers, focused));
