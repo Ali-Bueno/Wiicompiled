@@ -7,15 +7,6 @@
 namespace a11y::race {
 namespace {
 
-// Kart::Movement::UpdateRotate (0x8057C69C): grip yaw is stick x tightness x this speed factor,
-// which falls from 1 at 20 units/frame to 0.5 at 70 and stays there (docs/class-speed-review.md).
-constexpr float kFactorRiseEnd = 20.0f;
-constexpr float kFactorFloorStart = 70.0f;
-constexpr float kFactorAtRest = 0.4f;
-constexpr float kFactorRisePerUnit = 0.03f;
-constexpr float kFactorFallPerUnit = 0.01f;
-constexpr float kFactorFloor = 0.5f;
-
 // The tightest drift the reference kart can hold: its drift tightness (kartParam.bin, Standard
 // Kart M) plus the bonus a fresh drift starts with, half the tightness at full speed ratio and
 // decaying from there, turned by the same measured gain as grip (docs/class-speed-review.md). A
@@ -23,17 +14,11 @@ constexpr float kFactorFloor = 0.5f;
 constexpr float kDriftTightnessPerFrame = 0.01866f;
 constexpr float kFreshDriftBonus = 1.5f;
 
-float SpeedFactor(float v) {
-    if (v < kFactorRiseEnd) return kFactorAtRest + kFactorRisePerUnit * v;
-    if (v < kFactorFloorStart) return 1.0f - kFactorFallPerUnit * (v - kFactorRiseEnd);
-    return kFactorFloor;
-}
-
 // Grip radius is speed over yaw rate: v / (tightness x factor), so it scales from the reference by
 // the ratio of v / factor and the tightness cancels.
 float GripRadius(float v) {
-    const float reference = kReferenceSpeedUnitsPerFrame / SpeedFactor(kReferenceSpeedUnitsPerFrame);
-    return kReferenceGripRadius * (v / SpeedFactor(v)) / reference;
+    const float reference = kReferenceSpeedUnitsPerFrame / GripTurnFactor(kReferenceSpeedUnitsPerFrame);
+    return kReferenceGripRadius * (v / GripTurnFactor(v)) / reference;
 }
 
 float TightestDriftRadius(float v) {

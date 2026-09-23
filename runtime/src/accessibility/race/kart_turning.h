@@ -15,6 +15,21 @@ inline constexpr float kModelGripYawRadPerFrame = 0.02335f * 0.5f;
 // Measured over modelled, applied to the drift's modelled yaw too.
 inline constexpr float kMeasuredYawGain = kGripYawRadPerFrame / kModelGripYawRadPerFrame;
 
+// The grip turn's speed factor (Kinoko KartMove::calcRotation): 0.4 at rest, 1 at 20 units/frame,
+// falling to 0.5 at 70 and flat above, so a slow kart turns up to twice as fast as one at speed.
+inline constexpr float kGripFactorAtRest = 0.4f;
+inline constexpr float kGripFactorRisePerUnit = 0.03f;
+inline constexpr float kGripFactorRiseEnd = 20.0f;
+inline constexpr float kGripFactorFallPerUnit = 0.01f;
+inline constexpr float kGripFactorFloorStart = 70.0f;
+inline constexpr float kGripFactorAtSpeed = 0.5f;
+inline float GripTurnFactor(float speedPerFrame) {
+    const float v = speedPerFrame < 0.0f ? -speedPerFrame : speedPerFrame;
+    if (v < kGripFactorRiseEnd) return kGripFactorAtRest + kGripFactorRisePerUnit * v;
+    if (v < kGripFactorFloorStart) return 1.0f - kGripFactorFallPerUnit * (v - kGripFactorRiseEnd);
+    return kGripFactorAtSpeed;
+}
+
 // The radius full stick holds at the reference speed, about 3,260 units: every corner grade is
 // measured against it.
 inline constexpr float kReferenceGripRadius = kReferenceSpeedUnitsPerFrame / kGripYawRadPerFrame;
