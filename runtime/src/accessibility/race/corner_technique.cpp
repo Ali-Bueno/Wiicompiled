@@ -2,6 +2,7 @@
 
 #include "accessibility/race/anticipation.h"
 #include "accessibility/race/course_map.h"
+#include "accessibility/race/kart_turning.h"
 
 namespace a11y::race {
 namespace {
@@ -17,14 +18,10 @@ constexpr float kFactorFloor = 0.5f;
 
 // The tightest drift the reference kart can hold: its drift tightness (kartParam.bin, Standard
 // Kart M) plus the bonus a fresh drift starts with, half the tightness at full speed ratio and
-// decaying from there (docs/class-speed-review.md). A corner tighter than this at top speed cannot
-// be made without slowing down.
+// decaying from there, turned by the same measured gain as grip (docs/class-speed-review.md). A
+// corner tighter than this at top speed cannot be made without slowing down.
 constexpr float kDriftTightnessPerFrame = 0.01866f;
 constexpr float kFreshDriftBonus = 1.5f;
-
-// The radius every grade is measured against (course_curves.cpp kRadiusHard): full stick without
-// a drift at the reference speed.
-constexpr float kReferenceGripRadius = 6800.0f;
 
 float SpeedFactor(float v) {
     if (v < kFactorRiseEnd) return kFactorAtRest + kFactorRisePerUnit * v;
@@ -40,14 +37,12 @@ float GripRadius(float v) {
 }
 
 float TightestDriftRadius(float v) {
-    return v / (kDriftTightnessPerFrame * kFreshDriftBonus);
+    return v / (kDriftTightnessPerFrame * kFreshDriftBonus * kMeasuredYawGain);
 }
 
 // What the grade word already asks for, on the same scale as the need below.
 CornerTechnique GradeTechnique(TurnSeverity severity) {
     switch (severity) {
-        case TurnSeverity::Hairpin:
-            return CornerTechnique::Brake;
         case TurnSeverity::Hard:
             return CornerTechnique::Drift;
         default:

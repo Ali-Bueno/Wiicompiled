@@ -8,18 +8,20 @@
 
 #include "accessibility/a11y_log.h"
 #include "accessibility/race/anticipation.h"
+#include "accessibility/race/kart_turning.h"
 
 namespace a11y::race {
 namespace {
 
 // Corner grades by radius, in world units - one ladder on every course and every vehicle, by
-// the player's decision. The rungs are the game's own physics for its reference vehicle
-// (Standard Kart M with Mario at 150cc, 79.8 units/frame; Kinoko KartMove::calcRotation, stats
-// from kartParam.bin/driverParam.bin): full stick without a drift holds a 6,800-unit radius, a
-// drift with its outside-drift bonus about half of that. Half the stick is twice the radius.
-constexpr float kRadiusHard = 6800.0f;               // a drift is necessary
+// the player's decision. The rungs are the reference kart at 150cc as measured in play
+// (kart_turning.h): full stick without a drift holds about 3,260 units of radius, half the stick
+// twice that.
+constexpr float kRadiusHard = kReferenceGripRadius;  // a drift is necessary
 constexpr float kRadiusNormal = 2.0f * kRadiusHard;  // half stick
-constexpr float kRadiusEnter = 4.0f * kRadiusHard;   // a quarter of the stick: a corner begins
+// A corner begins here, about an eighth of the stick: the corner set play-tested since
+// 2026-09-02, kept when the rungs were recalibrated.
+constexpr float kRadiusEnter = 27200.0f;
 
 // The game's own "this is a corner": the CPU drifts when the signed turn angle at the ENPT vertex
 // it is heading for reaches this (func_8073D284, constant at guest 0x808CB04C).
@@ -31,7 +33,8 @@ constexpr float kTurnCornerRad = 0.30f;
 // closer than this: the CPU never straightens between them.
 constexpr float kDriftApproachUnits = 5000.0f;
 
-// A hard corner that turns at least this much overall is a hairpin (the rally pace-note sense).
+// A corner needing at least half the stick that turns this much overall is a hairpin (the rally
+// pace-note sense): the word names the shape, the technique word says what it takes.
 constexpr float kHairpinDegrees = 120.0f;
 
 constexpr float kPi = 3.14159265358979f;
@@ -54,9 +57,10 @@ void CourseMap::GradeCurve(Curve& curve) const {
     curve.radius = radians > 0.0f
                        ? std::max(curve.length / radians, curve.corridorRadius)
                        : std::numeric_limits<float>::max();
-    if (curve.radius < kRadiusHard) {
-        curve.severity = curve.totalDegrees >= kHairpinDegrees ? TurnSeverity::Hairpin
-                                                               : TurnSeverity::Hard;
+    if (curve.radius < kRadiusNormal && curve.totalDegrees >= kHairpinDegrees) {
+        curve.severity = TurnSeverity::Hairpin;
+    } else if (curve.radius < kRadiusHard) {
+        curve.severity = TurnSeverity::Hard;
     } else if (curve.radius < kRadiusNormal) {
         curve.severity = TurnSeverity::Normal;
     } else {
