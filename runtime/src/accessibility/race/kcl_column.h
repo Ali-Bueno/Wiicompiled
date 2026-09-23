@@ -26,6 +26,12 @@ struct KclPicker {
 
 void KclOffer(KclPicker& picker, float surfaceY, std::uint8_t baseType, bool launch);
 
+// The prism list of the octree leaf holding (x, y, z) in the mesh's own space, or 0 outside it.
+std::uint32_t KclLeafListAt(const KclMesh& mesh, float x, float y, float z);
+
+// A leaf's prism indices (from KclLeafListAt) into `out`, at most `max`; returns how many.
+int KclLeafPrisms(std::uint32_t list, std::uint16_t* out, int max);
+
 // Steps down the column of `mesh` at (x, z), offering every surface it crosses to the picker.
 // Coordinates are the mesh's OWN space - world for the course, octree space for an object.
 void KclWalkColumn(const KclMesh& mesh, float x, float z, float startY, float stopY,

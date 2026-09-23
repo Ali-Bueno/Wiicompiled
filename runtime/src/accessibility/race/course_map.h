@@ -1,6 +1,7 @@
 #ifndef MKW_ACCESSIBILITY_RACE_COURSE_MAP_H
 #define MKW_ACCESSIBILITY_RACE_COURSE_MAP_H
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -185,6 +186,16 @@ public:
 private:
     // Below this a line is not a lap and every query would be meaningless.
     static constexpr int kMinStations = 4;
+    // The narrowest the authored corridor is taken to be where it sets the line's geometry - the
+    // station spacing and how far a corner may be rounded. Some routes author almost none (N64
+    // Luigi Raceway: 79, against 1,050 of real road), which made 2,451 stations, a 20-second
+    // edge sweep and corners the fillet could not round. A quarter of the narrowest real road the
+    // corpus measures (1,023, Wario's Gold Mine), about the ratio authored corridors keep to the
+    // road at their tenth percentile (road corpus, 2026-09-23).
+    static constexpr float kMinGeometryHalfWidth = 256.0f;
+    static float GeometryHalfWidth(float authored) {
+        return authored > 0.0f ? std::max(authored, kMinGeometryHalfWidth) : authored;
+    }
 
     struct Station {
         float x = 0.0f, z = 0.0f;

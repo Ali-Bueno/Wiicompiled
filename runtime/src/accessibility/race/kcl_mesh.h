@@ -83,6 +83,15 @@ inline constexpr std::uint16_t kKclBaseTypeMask = 0x1F;
 // and Kart::Collision::ProcessFloor (0x8056EA04) tests the same bit to allow a trick.
 inline constexpr std::uint16_t kKclTrickableBit = 0x2000;
 
+// A prism's attribute is the low half of its last word (docs/kcl-runtime.md §2). One read, so a
+// caller can screen a prism by type before decoding it.
+inline constexpr std::uint32_t kKclPrismAttributeWord = 0x0C;
+inline bool KclTryPrismAttribute(const KclMesh& m, std::uint32_t index, std::uint16_t& attribute) {
+    return index != 0 && index <= m.prismCount &&
+           KclTryU16(m.prismData + index * kKclPrismStride + kKclPrismAttributeWord,
+                     /*highHalf=*/false, attribute);
+}
+
 const KclMesh& KclMeshData();
 
 // Reads and validates a KCLController header into `out`. Public because an object's collision

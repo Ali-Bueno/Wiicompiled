@@ -239,7 +239,7 @@ float CourseMap::StationSpacing() const {
     scale.reserve(static_cast<std::size_t>(n));
     for (const Station& s : mPoints) {
         if (s.halfWidth > 0.0f) {
-            scale.push_back(s.halfWidth);
+            scale.push_back(GeometryHalfWidth(s.halfWidth));
         }
     }
     if (scale.empty()) {

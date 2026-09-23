@@ -21,6 +21,13 @@ struct KclFace {
     bool trickable = false;  // kKclTrickableBit of the attribute
 };
 
+// Any prism's triangle, corners in the mesh's own space, and its attribute - walls included.
+struct KclTriangle {
+    float v[3][3] = {};
+    std::uint16_t attribute = 0;
+};
+bool KclDecodeTriangle(const KclMesh& mesh, std::uint32_t index, KclTriangle& tri);
+
 // Rebuilds prism `index` (1-based, as the octree lists it) of `mesh` as a floor triangle. False
 // when the prism is degenerate, is a wall or a pure trigger, is too steep to be a floor, or reads
 // out of range - all of which mean "not ground under this point". The mesh is a parameter because

@@ -6,18 +6,10 @@
 #include "accessibility/race/kcl_prism.h"
 
 namespace a11y::race {
-namespace {
-
-// The attribute is the low half of the prism's last word (docs/kcl-runtime.md §2).
-constexpr std::uint32_t kPrismEnrm3AttrWord = 0x0C;
-
-}  // namespace
 
 bool KclPrismIsLaunch(const KclMesh& mesh, std::uint32_t index) {
     std::uint16_t attribute = 0;
-    if (index == 0 || index > mesh.prismCount ||
-        !KclTryU16(mesh.prismData + index * kKclPrismStride + kPrismEnrm3AttrWord,
-                   /*highHalf=*/false, attribute)) {
+    if (!KclTryPrismAttribute(mesh, index, attribute)) {
         return false;
     }
     return KclIsLaunchSurface(static_cast<std::uint8_t>(attribute & kKclBaseTypeMask),

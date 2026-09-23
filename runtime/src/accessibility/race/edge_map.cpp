@@ -17,10 +17,11 @@ namespace a11y::race {
 namespace {
 
 // Stations measured per tick. A station costs two sweeps of up to 160 probes each and every probe
-// re-decodes a leaf's prisms, so the whole map in one frame is a visible freeze. Spread this thin
-// the build is background work: a 40-station course is measured within the countdown, and the
-// longest route finishes in a few seconds of racing.
+// re-decodes a leaf's prisms, so the whole map in one frame is a visible freeze. At least this many
+// per tick, then more while the tick stays inside its budget: two alone left a 2,451-station course
+// measuring for 20 seconds, the whole first lap without edge cues or a repaired line (2026-09-23).
 constexpr int kEdgeMapStationsPerTick = 2;
+constexpr double kEdgeMapTickBudgetMs = 1.5;
 
 // How long to keep waiting for the collision mesh before accepting there is none - the same
 // schedule the route retry gives up on, so a course that never reads says so once.
@@ -119,8 +120,12 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     out.shift = 0.0f;
     // Each side stands on its own: a line point hard against one boundary still measured the other
     // correctly, and that is the side the player is about to need.
-    out.leftValid = out.leftKind != EdgeKind::Unknown && out.leftDistance >= kEdgeMapMinDistance;
-    out.rightValid = out.rightKind != EdgeKind::Unknown && out.rightDistance >= kEdgeMapMinDistance;
+    // A wall is measured to the wall itself (KclWallAcross), so one closer than a march step is a
+    // real reading, not a failed probe - the line standing next to it is exactly what must move.
+    out.leftValid = out.leftKind != EdgeKind::Unknown &&
+                    (out.leftDistance >= kEdgeMapMinDistance || out.leftKind == EdgeKind::Wall);
+    out.rightValid = out.rightKind != EdgeKind::Unknown &&
+                     (out.rightDistance >= kEdgeMapMinDistance || out.rightKind == EdgeKind::Wall);
     return out.leftValid && out.rightValid;
 }
 
@@ -369,9 +374,16 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth, float frameSec) {
         return;
     }
 
-    // Temporary: the probe is only background work if it really is, and only a clock says so.
+    // The clock paces the sweep (kEdgeMapTickBudgetMs) and reports its worst tick.
     const auto started = std::chrono::steady_clock::now();
-    for (int done = 0; done < kEdgeMapStationsPerTick && g_cursor < map.StationCount(); ++done) {
+    const auto elapsedMs = [&started]() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+    };
+    int done = 0;
+    for (; g_cursor < map.StationCount() &&
+           (done < kEdgeMapStationsPerTick || elapsedMs() < kEdgeMapTickBudgetMs);
+         ++done) {
         StationEdges edges;
         bool onFloor = false;
         const int station = g_cursor++;
@@ -384,10 +396,11 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth, float frameSec) {
         g_edges[static_cast<std::size_t>(station)] = edges;
         g_lineOnFloor[static_cast<std::size_t>(station)] = onFloor ? 1 : 0;
     }
-    g_worstTickMs = std::max(
-        g_worstTickMs,
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
-            .count());
+    g_worstTickMs = std::max(g_worstTickMs, elapsedMs());
+    // The repair gets a tick of its own rather than landing on the last batch of stations.
+    if (done > 0) {
+        return;
+    }
     if (g_cursor >= map.StationCount()) {
         // The safe bounds need the kart's size, which reads only while a kart exists; until then the
         // sweep stays complete and waits.

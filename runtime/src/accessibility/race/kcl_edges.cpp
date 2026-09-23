@@ -2,6 +2,7 @@
 #include <cmath>
 
 #include "accessibility/race/kcl_road.h"
+#include "accessibility/race/kcl_walls.h"
 
 namespace a11y::race {
 namespace {
@@ -68,6 +69,18 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
     float stopped = 0.0f;
     for (int i = 1; i <= samples; ++i) {
         const float distance = kKclLateralStepUnits * static_cast<float>(i);
+        // A wall across this step ends the road where it stands, whatever floor runs on under it:
+        // measured to the wall itself, with road behind it, which is what EdgeKind::Wall means.
+        const float previous = distance - kKclLateralStepUnits;
+        float across = 0.0f;
+        if (KclWallAcross(x + dirX * previous, z + dirZ * previous, x + dirX * distance,
+                          z + dirZ * distance, referenceY, across)) {
+            edge.distance = previous + across * kKclLateralStepUnits;
+            edge.cause = KclSurface::Road;
+            edge.beyond = KclSurface::Road;
+            edge.beyondHit = true;
+            return edge;
+        }
         const KclFloor floor = KclRoad::ProbeFloorNear(x + dirX * distance, z + dirZ * distance,
                                                        referenceY, kEdgeBankWindowUnits);
         stopped = distance;

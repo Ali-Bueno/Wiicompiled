@@ -77,22 +77,11 @@ bool KclFindLeaf(const KclMesh& m, std::uint32_t ux, std::uint32_t uy, std::uint
 }
 
 void KclScanLeaf(const KclMesh& m, const KclLeaf& leaf, float x, float z, KclPicker& picker) {
-    // The list is u16 prism indices, 1-based and zero-terminated. Guest halfwords are addressed by
-    // their containing word, and the one at the word's own address is the high half.
-    //
-    // The pointer the descent returns is biased by -2: the game's own consumer advances its cursor
-    // BEFORE its first read (shard_7876885ae2c628b5c1e906c3.cpp loc_807C0820 - it loads the cursor
-    // from controller+0x68, adds 2, stores it back, and only then reads the halfword). Starting at
-    // the raw pointer reads the previous list's terminator and every leaf comes back empty.
-    std::uint32_t entry = leaf.list + sizeof(std::uint16_t);
-    for (int n = 0; n < kMaxLeafPrisms; ++n) {
-        std::uint16_t index = 0;
-        if (!KclTryU16(entry & ~3u, (entry & 2u) == 0, index) || index == 0) {
-            return;
-        }
-        entry += sizeof(std::uint16_t);
+    std::uint16_t indices[kMaxLeafPrisms];
+    const int count = KclLeafPrisms(leaf.list, indices, kMaxLeafPrisms);
+    for (int n = 0; n < count; ++n) {
         KclFace face;
-        if (!KclDecodePrism(m, index, face) || !KclCoversXZ(face, x, z)) {
+        if (!KclDecodePrism(m, indices[n], face) || !KclCoversXZ(face, x, z)) {
             continue;
         }
         KclOffer(picker, KclHeightAt(face, x, z), face.baseType,
@@ -101,6 +90,38 @@ void KclScanLeaf(const KclMesh& m, const KclLeaf& leaf, float x, float z, KclPic
 }
 
 }  // namespace
+
+int KclLeafPrisms(std::uint32_t list, std::uint16_t* out, int max) {
+    // The list is u16 prism indices, 1-based and zero-terminated. Guest halfwords are addressed by
+    // their containing word, and the one at the word's own address is the high half.
+    //
+    // The pointer the descent returns is biased by -2: the game's own consumer advances its cursor
+    // BEFORE its first read (shard_7876885ae2c628b5c1e906c3.cpp loc_807C0820 - it loads the cursor
+    // from controller+0x68, adds 2, stores it back, and only then reads the halfword). Starting at
+    // the raw pointer reads the previous list's terminator and every leaf comes back empty.
+    std::uint32_t entry = list + sizeof(std::uint16_t);
+    int count = 0;
+    while (count < max) {
+        std::uint16_t index = 0;
+        if (!KclTryU16(entry & ~3u, (entry & 2u) == 0, index) || index == 0) {
+            break;
+        }
+        out[count++] = index;
+        entry += sizeof(std::uint16_t);
+    }
+    return count;
+}
+
+std::uint32_t KclLeafListAt(const KclMesh& m, float x, float y, float z) {
+    std::uint32_t ux = 0, uz = 0;
+    const double localY = static_cast<double>(y) - m.areaMinY;
+    if (!m.ready || !KclLocalXZ(m, x, z, ux, uz) || !(localY >= 0.0) ||
+        localY > static_cast<double>(~m.maskY)) {
+        return 0;
+    }
+    KclLeaf leaf;
+    return KclFindLeaf(m, ux, static_cast<std::uint32_t>(localY), uz, leaf) ? leaf.list : 0;
+}
 
 void KclOffer(KclPicker& p, float surfaceY, std::uint8_t baseType, bool launch) {
     if (!std::isfinite(surfaceY)) {

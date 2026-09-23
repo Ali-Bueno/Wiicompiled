@@ -149,10 +149,11 @@ void LogStateChange(const RaceState& state) {
     lastDriving = driving;
     RT_LOGF(RT_TAG_A11Y,
             "race state: valid=%d driving=%d finished=%d player=%d kart=%08x cp=%d lap=%d/%d "
-            "pos=%d speed=%.2f ratio=%.2f\n",
+            "pos=%d speed=%.2f ratio=%.2f base=%.2f\n",
             valid, driving, state.finished ? 1 : 0, state.playerId, state.kartObject,
             state.checkpoint, state.lap, state.totalLaps, state.position,
-            static_cast<double>(state.speed), static_cast<double>(state.speedRatio));
+            static_cast<double>(state.speed), static_cast<double>(state.speedRatio),
+            static_cast<double>(state.baseSpeed));
 }
 
 // Temporary telemetry, about once a second while driving. Answers three questions at once: whether
@@ -366,5 +367,6 @@ void Tick() {
     // from the geometry.
     g_narrator.Tick(state, dtSec);
 }
+
 
 }  // namespace a11y::race

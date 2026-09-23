@@ -31,7 +31,7 @@ bool KclReadVec(std::uint32_t base, std::uint32_t index, float& x, float& y, flo
 
 // kcl_lib.py:78-98: a prism stores one vertex plus the face and edge normals, and the other two
 // vertices fall out of cross(edgeNormal, faceNormal) scaled by the prism height.
-bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
+bool KclDecodeTriangle(const KclMesh& m, std::uint32_t index, KclTriangle& tri) {
     if (index == 0 || index > m.prismCount) {
         return false;
     }
@@ -46,10 +46,6 @@ bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
         !KclTryU16(prism + kPrismEnrm3AttrWord, /*highHalf=*/true, e3) ||
         !KclTryU16(prism + kPrismEnrm3AttrWord, /*highHalf=*/false, attribute) ||
         !(height > 0.0f)) {
-        return false;
-    }
-    const std::uint8_t baseType = static_cast<std::uint8_t>(attribute & kKclBaseTypeMask);
-    if (!KclBaseTypeCanBeFloor(baseType)) {
         return false;
     }
     if (posIdx >= m.posCount || fnrmIdx >= m.nrmCount || e1 >= m.nrmCount || e2 >= m.nrmCount ||
@@ -72,8 +68,34 @@ bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
     }
     const float ta = height / da;
     const float tb = height / db;
-    const float v1x = px + cbx * tb, v1y = py + cby * tb, v1z = pz + cbz * tb;
-    const float v2x = px + cax * ta, v2y = py + cay * ta, v2z = pz + caz * ta;
+    tri.v[0][0] = px;
+    tri.v[0][1] = py;
+    tri.v[0][2] = pz;
+    tri.v[1][0] = px + cbx * tb;
+    tri.v[1][1] = py + cby * tb;
+    tri.v[1][2] = pz + cbz * tb;
+    tri.v[2][0] = px + cax * ta;
+    tri.v[2][1] = py + cay * ta;
+    tri.v[2][2] = pz + caz * ta;
+    tri.attribute = attribute;
+    return true;
+}
+
+bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
+    // The attribute alone rejects walls and triggers before any vector is read: most of a leaf.
+    std::uint16_t attribute = 0;
+    if (!KclTryPrismAttribute(m, index, attribute) ||
+        !KclBaseTypeCanBeFloor(static_cast<std::uint8_t>(attribute & kKclBaseTypeMask))) {
+        return false;
+    }
+    KclTriangle tri;
+    if (!KclDecodeTriangle(m, index, tri)) {
+        return false;
+    }
+    const std::uint8_t baseType = static_cast<std::uint8_t>(tri.attribute & kKclBaseTypeMask);
+    const float px = tri.v[0][0], py = tri.v[0][1], pz = tri.v[0][2];
+    const float v1x = tri.v[1][0], v1y = tri.v[1][1], v1z = tri.v[1][2];
+    const float v2x = tri.v[2][0], v2y = tri.v[2][1], v2z = tri.v[2][2];
 
     // The plane comes from the reconstructed triangle rather than the stored face normal, so the
     // ray and the coverage test agree by construction (kcl_lib.py:135-149).
@@ -105,7 +127,7 @@ bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
     face.cx = v2x;
     face.cz = v2z;
     face.baseType = baseType;
-    face.trickable = (attribute & kKclTrickableBit) != 0;
+    face.trickable = (tri.attribute & kKclTrickableBit) != 0;
     return true;
 }
 

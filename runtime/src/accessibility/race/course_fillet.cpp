@@ -87,7 +87,8 @@ void CourseMap::FilletCorners(float spacing) {
             continue;
         }
         const float bySegments = 0.5f * std::min(inLen, outLen) / tanHalf;
-        const float byCorridor = here.halfWidth * kEdgeOnsetRealFraction / (secHalf - 1.0f);
+        const float byCorridor =
+            GeometryHalfWidth(here.halfWidth) * kEdgeOnsetRealFraction / (secHalf - 1.0f);
         c.radius = std::min(bySegments, byCorridor);
         c.tangent = c.radius * tanHalf;
         if (c.tangent > 0.0f) {
