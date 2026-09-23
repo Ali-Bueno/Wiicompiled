@@ -46,6 +46,8 @@ struct StationEdges {
     // own safe band - the TOTAL correction from where the course authored it. Zero on a station the
     // route already placed well, which is most of them.
     float shift = 0.0f;
+    // The line stands on a ramp, jump pad or trickable surface here (KclFloor::launch).
+    bool launch = false;
 
     bool Valid(bool right) const { return right ? rightValid : leftValid; }
     float Distance(bool right) const { return right ? rightDistance : leftDistance; }

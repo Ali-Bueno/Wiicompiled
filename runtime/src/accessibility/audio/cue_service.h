@@ -28,6 +28,7 @@ enum class CueChannel {
     Curve,      // curve entry, apex and exit beeps
     Countdown,  // the corner countdown, its own voice so a landmark beep never eats a stage
     ItemBox,  // nearest item box proximity blip
+    TrickRamp,  // next trick ramp or bouncy mushroom on the line
     Hazard,   // shells, bananas, obstacles
     Count,
 };
@@ -42,6 +43,10 @@ struct CueSpec {
     float amplitude = 0.0f;    // 0..1, before the master volume
     float pan = 0.0f;          // -1 hard left, 0 centre, +1 hard right
     float durationSec = 0.0f;  // one-shots only; SetSustained and samples ignore it
+    // Synthesized one-shots only: the frequency glides from frequencyHz to this over durationSec,
+    // exponentially - a constant number of semitones per second, which is what the ear hears as an
+    // even rise. Zero keeps it flat.
+    float sweepToHz = 0.0f;
     float attackSec = kDefaultAttackSec;
     float releaseSec = kDefaultReleaseSec;
     // A loaded sample replaces the synthesized waveform; it plays to its own end, with
@@ -92,6 +97,7 @@ private:
         Waveform shape = Waveform::Triangle;
         float phase = 0.0f;  // cycles; kept across re-steers so a pitch change does not click
         float freq = 0.0f, targetFreq = 0.0f;
+        float sweepPerSample = 1.0f;  // one-shot glide ratio towards targetFreq; 1 re-steers per block
         float amp = 0.0f, targetAmp = 0.0f;
         float gainL = 0.0f, targetGainL = 0.0f;
         float gainR = 0.0f, targetGainR = 0.0f;

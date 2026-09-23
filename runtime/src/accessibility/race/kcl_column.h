@@ -24,7 +24,7 @@ struct KclPicker {
     float bestDelta = 0.0f;
 };
 
-void KclOffer(KclPicker& picker, float surfaceY, std::uint8_t baseType);
+void KclOffer(KclPicker& picker, float surfaceY, std::uint8_t baseType, bool launch);
 
 // Steps down the column of `mesh` at (x, z), offering every surface it crosses to the picker.
 // Coordinates are the mesh's OWN space - world for the course, octree space for an object.

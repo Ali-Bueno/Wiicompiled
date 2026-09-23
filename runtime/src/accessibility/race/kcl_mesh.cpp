@@ -34,6 +34,8 @@ constexpr std::uint32_t kKclDrivableTypes =
     KclTypeBit(0x08) | KclTypeBit(0x0B) | KclTypeBit(0x13) | KclTypeBit(0x15) | KclTypeBit(0x16) |
     KclTypeBit(0x17) | KclTypeBit(0x1D);
 constexpr std::uint32_t kKclOffroadTypes = KclTypeBit(0x02) | KclTypeBit(0x03) | KclTypeBit(0x04);
+// kcl_lib.py:32: 0x07 BoostRamp and 0x08 JumpPad, the two drivable types that launch the kart.
+constexpr std::uint32_t kKclLaunchTypes = KclTypeBit(0x07) | KclTypeBit(0x08);
 // kcl_lib.py:37-40: WALLS then NONSOLID. Neither can ever be a floor.
 constexpr std::uint32_t kKclNonFloorTypes =
     KclTypeBit(0x0C) | KclTypeBit(0x0D) | KclTypeBit(0x0E) | KclTypeBit(0x0F) | KclTypeBit(0x14) |
@@ -94,6 +96,10 @@ KclSurface KclClassifyBaseType(std::uint8_t baseType) {
 
 bool KclBaseTypeCanBeFloor(std::uint8_t baseType) {
     return (kKclNonFloorTypes & KclTypeBit(baseType)) == 0;
+}
+
+bool KclIsLaunchSurface(std::uint8_t baseType, bool trickable) {
+    return trickable || (kKclLaunchTypes & KclTypeBit(baseType)) != 0;
 }
 
 const char* KclSurfaceName(KclSurface surface) {

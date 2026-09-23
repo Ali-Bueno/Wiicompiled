@@ -1,6 +1,20 @@
 Changelog - Mario Kart Wii Accessibility
 
 
+Changes on 16/09/2026
+
+Changed:
+
+Lowered the trick ramp cue by one octave, keeping its short rising jump sound. The race cue and its settings-menu demo use the same lower pitch.
+
+
+Changes on 14/09/2026
+
+New:
+
+Trick ramp cue. A short rising blip, like an 8-bit jump, points at the next ramp, jump pad or bouncy mushroom you can trick off along the racing line: it gets louder as you approach, like the item box cue, and goes quiet while you are on it. Both this cue and the item box cue now pan in the road's frame, matching the steering guide: on the racing line a ramp ahead is centred, and if you drift right of it your engine sounds right and the ramp sounds left by the same amount. Comes with its own volume row and demo row in the settings menu (trick_ramp_cue_volume in Config.toml). Drop a trick_ramp.wav into accessibility_sounds to use your own sound.
+
+
 Changes on 12/09/2026
 
 New:

@@ -79,6 +79,9 @@ inline constexpr float kCourseKclScale = 1.0f;
 // A prism's base type is the low five bits of its attribute (docs/kcl-runtime.md §2). Shared so the
 // decoder and the classifiers cannot disagree about how wide the field is.
 inline constexpr std::uint16_t kKclBaseTypeMask = 0x1F;
+// KCLTypeHolder::ReplaceTrickableBit (0x807BDBC4) inserts its flag at bit 13 of the attribute,
+// and Kart::Collision::ProcessFloor (0x8056EA04) tests the same bit to allow a trick.
+inline constexpr std::uint16_t kKclTrickableBit = 0x2000;
 
 const KclMesh& KclMeshData();
 
@@ -92,6 +95,10 @@ KclSurface KclClassifyBaseType(std::uint8_t baseType);
 // False for walls and for the pure triggers and item-only geometry a kart passes through: left in
 // the floor set they act as phantom ground (kcl_lib.py:36-40, filtered at kcl_lib.py:133).
 bool KclBaseTypeCanBeFloor(std::uint8_t baseType);
+
+// A surface the kart leaves the ground from and can trick off: anything flagged trickable, plus
+// the boost ramps and jump pads (the bouncy mushrooms are jump pads) whose launch is the type.
+bool KclIsLaunchSurface(std::uint8_t baseType, bool trickable);
 
 }  // namespace a11y::race
 

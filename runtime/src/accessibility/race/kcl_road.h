@@ -27,6 +27,7 @@ struct KclFloor {
     float y = 0.0f;
     std::uint8_t baseType = 0;
     KclSurface category = KclSurface::None;
+    bool launch = false;  // KclIsLaunchSurface: a ramp, jump pad or trickable surface
 };
 
 // One side of the road, measured outwards from a point on the line.

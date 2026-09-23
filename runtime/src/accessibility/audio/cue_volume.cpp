@@ -15,6 +15,7 @@ constexpr CueVolumeKnob kKnobs[] = {
     {CueChannel::Curve, "curve_cue_volume"},
     {CueChannel::Countdown, "countdown_cue_volume"},
     {CueChannel::ItemBox, "item_box_cue_volume"},
+    {CueChannel::TrickRamp, "trick_ramp_cue_volume"},
 };
 
 constexpr int kFullPercent = 100;

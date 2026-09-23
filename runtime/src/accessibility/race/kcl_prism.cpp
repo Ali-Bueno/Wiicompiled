@@ -105,6 +105,7 @@ bool KclDecodePrism(const KclMesh& m, std::uint32_t index, KclFace& face) {
     face.cx = v2x;
     face.cz = v2z;
     face.baseType = baseType;
+    face.trickable = (attribute & kKclTrickableBit) != 0;
     return true;
 }
 

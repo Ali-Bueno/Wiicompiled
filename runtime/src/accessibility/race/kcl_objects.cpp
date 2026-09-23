@@ -275,7 +275,7 @@ void KclObjects::OfferFloors(float x, float z, float startY, float stopY, float 
         // Back to world through the local-to-world matrix, undoing the scale first (§5).
         float wx = 0.0f, wy = 0.0f, wz = 0.0f;
         KclApplyMtx34(localToWorld, mx * scale, local.kept.y * scale, mz * scale, wx, wy, wz);
-        KclOffer(picker, wy, local.kept.baseType);
+        KclOffer(picker, wy, local.kept.baseType, local.kept.launch);
     }
 }
 

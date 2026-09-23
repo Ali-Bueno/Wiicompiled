@@ -4,7 +4,7 @@
 #include <cmath>
 
 #include "accessibility/audio/cue_service.h"
-#include "accessibility/race/anticipation.h"
+#include "accessibility/race/beacon_cue.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/heading.h"
@@ -39,19 +39,10 @@ constexpr std::uint32_t kItemboxActive = 1;
 constexpr std::uint32_t kVtableIsActiveSlot = 0xEC;
 constexpr std::uint32_t kItemboxIsActiveAddr = 0x806C69C0;  // Objects::Itembox::IsActive
 
-// How far ahead a box is still worth mentioning: the spoken lead at the current speed, the same
-// reaction budget every other anticipating cue gets, floored at one road width when stopped.
-constexpr float kBeaconRangeSec = kSpokenLeadSec;
-
 constexpr float kBeaconHz = 880.0f;  // A5, clear of the curve beeps and the edge tone
 constexpr float kBeaconBlipSec = 0.05f;
-constexpr float kBeaconIntervalSec = 0.55f;
 constexpr float kBeaconVolumeNear = 0.5f;
 constexpr float kBeaconVolumeFar = 0.18f;
-
-// The lean curve below is sin(bearing) * cos(bearing), which peaks at 45 degrees - the bearing that
-// has always meant full pan. Dividing by its value there keeps that bearing at exactly full pan.
-constexpr float kBeaconLeanPeak = 0.5f;  // sin(pi/4) * cos(pi/4), the peak of the lean curve
 
 // Once the box is behind, the blip drops in pitch instead of vanishing, so passing one is something
 // the player hears rather than something that just stops.
@@ -159,8 +150,7 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
         return;
     }
 
-    const float range =
-        std::max(state.speedPerSecond * kBeaconRangeSec, 2.0f * map.MedianHalfWidth());
+    const float range = BeaconRange(state.speedPerSecond, map.MedianHalfWidth());
     float boxX = 0.0f, boxZ = 0.0f;
     if (range <= 0.0f || !NearestBox(state, range, boxX, boxZ)) {
         mBlipTimer = 0.0f;
@@ -176,19 +166,17 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
     const float dx = boxX - state.x;
     const float dz = boxZ - state.z;
     const float distance = std::sqrt(dx * dx + dz * dz);
-    const float nearness = std::clamp(1.0f - distance / range, 0.0f, 1.0f);
+    const float nearness = BeaconNearness(distance, range);
 
-    // Ahead keeps full pitch; the further behind it falls, the lower it drops.
-    const float ahead = std::cos(bearing);
-    const float behind = std::clamp(-ahead, 0.0f, 1.0f);
+    // Ahead keeps full pitch; the further behind it falls, the lower it drops: the pan says which
+    // side of the kart the box is on, the pitch whether it is still ahead.
+    const float behind = std::clamp(-std::cos(bearing), 0.0f, 1.0f);
     const float pitch = 1.0f - behind * (1.0f - kBeaconPassedPitch);
     const float amplitude = kBeaconVolumeFar + (kBeaconVolumeNear - kBeaconVolumeFar) * nearness;
-    // Pan on sin, not on the bearing itself: a box directly behind reads as a bearing near +/-pi
-    // and would slam to a hard side. Folding in the forward component sends it to centre instead,
-    // where the dropped pitch is what says "behind".
-    const float lean = std::sin(bearing) * std::max(ahead, 0.0f) / kBeaconLeanPeak;
-    const float pan = std::clamp(lean, -1.0f, 1.0f);
-    CueService::Instance().PlayOneShot(CueChannel::ItemBox, MakeBeaconBlip(pitch, amplitude, pan));
+    const float arc = map.ArcOfPosition(state.x, state.z, station);
+    CueService::Instance().PlayOneShot(
+        CueChannel::ItemBox,
+        MakeBeaconBlip(pitch, amplitude, RoadFramePan(map, arc, state, boxX, boxZ)));
 }
 
 }  // namespace a11y::race

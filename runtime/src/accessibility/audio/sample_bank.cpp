@@ -23,6 +23,8 @@ const char* FileNameFor(SampleId id) {
             return "item_box.wav";
         case SampleId::Banana:
             return "banana.wav";
+        case SampleId::TrickRamp:
+            return "trick_ramp.wav";
         default:
             return nullptr;
     }

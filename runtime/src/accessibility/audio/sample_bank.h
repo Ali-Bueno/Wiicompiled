@@ -12,6 +12,7 @@ enum class SampleId {
     None,
     ItemBox,  // item_box.wav — the item box beacon blip
     Banana,   // banana.wav — reserved for the hazard beacon
+    TrickRamp,  // trick_ramp.wav — the trick ramp beacon blip
     Count,
 };
 

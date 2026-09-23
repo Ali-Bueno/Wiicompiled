@@ -101,6 +101,7 @@ constexpr Phrase kEnglishDefaults[] = {
     {"opt_curve_cue_volume", "curve cue volume"},
     {"opt_countdown_cue_volume", "countdown cue volume"},
     {"opt_item_box_cue_volume", "item box cue volume"},
+    {"opt_trick_ramp_cue_volume", "trick ramp cue volume"},
     {"opt_invert_pan", "invert steering pan"},
     {"opt_steering_strength", "steering guide strength"},
     {"opt_look_ahead", "anticipation"},
@@ -109,6 +110,7 @@ constexpr Phrase kEnglishDefaults[] = {
     {"demo_edge", "hear the edge tone"},
     {"demo_curve", "hear a curve beep"},
     {"demo_itembox", "hear the item box"},
+    {"demo_trickramp", "hear the trick ramp"},
 
     // Spoken after the row's name and value. One "<key>_help" per option, by the naming
     // convention settings_menu.cpp uses; a row without one simply reads name and value.
@@ -137,6 +139,9 @@ constexpr Phrase kEnglishDefaults[] = {
      "The three rising beeps that count a corner in. Every step plays one."},
     {"opt_item_box_cue_volume_help",
      "The blip that points at a nearby item box while your hands are empty. Every step plays it."},
+    {"opt_trick_ramp_cue_volume_help",
+     "The rising blip that points at the next ramp or bouncy mushroom you can trick off. Every "
+     "step plays it."},
     {"opt_steering_strength_help",
      "How hard the engine pans when the kart points away from the racing line. Raise it for a wider, more obvious swing, lower it for a subtler one."},
     {"opt_look_ahead_help",
@@ -153,6 +158,8 @@ constexpr Phrase kEnglishDefaults[] = {
     {"demo_curve_help", "Plays the beep that marks a corner coming up."},
     {"demo_itembox_help",
      "Plays the blip that points at a nearby item box while your hands are empty."},
+    {"demo_trickramp_help",
+     "Plays the rising blip that points at the next ramp or mushroom you can trick off."},
 
     {"weight_light", "light weight"},
     {"weight_medium", "medium weight"},

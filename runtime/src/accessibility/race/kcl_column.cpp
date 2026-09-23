@@ -95,13 +95,14 @@ void KclScanLeaf(const KclMesh& m, const KclLeaf& leaf, float x, float z, KclPic
         if (!KclDecodePrism(m, index, face) || !KclCoversXZ(face, x, z)) {
             continue;
         }
-        KclOffer(picker, KclHeightAt(face, x, z), face.baseType);
+        KclOffer(picker, KclHeightAt(face, x, z), face.baseType,
+                 KclIsLaunchSurface(face.baseType, face.trickable));
     }
 }
 
 }  // namespace
 
-void KclOffer(KclPicker& p, float surfaceY, std::uint8_t baseType) {
+void KclOffer(KclPicker& p, float surfaceY, std::uint8_t baseType, bool launch) {
     if (!std::isfinite(surfaceY)) {
         return;
     }
@@ -113,6 +114,7 @@ void KclOffer(KclPicker& p, float surfaceY, std::uint8_t baseType) {
     p.kept.y = surfaceY;
     p.kept.baseType = baseType;
     p.kept.category = KclClassifyBaseType(baseType);
+    p.kept.launch = launch;
     p.bestDelta = delta;
     p.haveKept = true;
 }

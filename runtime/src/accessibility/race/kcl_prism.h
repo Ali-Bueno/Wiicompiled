@@ -18,6 +18,7 @@ struct KclFace {
     float nx = 0.0f, ny = 0.0f, nz = 0.0f, d = 0.0f;
     float ax = 0.0f, az = 0.0f, bx = 0.0f, bz = 0.0f, cx = 0.0f, cz = 0.0f;
     std::uint8_t baseType = 0;
+    bool trickable = false;  // kKclTrickableBit of the attribute
 };
 
 // Rebuilds prism `index` (1-based, as the octree lists it) of `mesh` as a floor triangle. False

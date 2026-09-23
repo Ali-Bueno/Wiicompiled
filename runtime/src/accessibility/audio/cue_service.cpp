@@ -122,13 +122,22 @@ void CueService::Apply(Voice& voice, const CueSpec& spec, bool sustained, bool r
         voice.samplePos = 0.0f;
     }
     voice.sample = sample;
+    voice.sweepPerSample = 1.0f;
     if (!sustained) {
         voice.remainingSec = spec.durationSec;
+        if (!sample && spec.sweepToHz > 0.0f && spec.frequencyHz > 0.0f && spec.durationSec > 0.0f) {
+            voice.sweepPerSample = std::pow(spec.sweepToHz / spec.frequencyHz,
+                                            1.0f / (spec.durationSec * static_cast<float>(kSampleRate)));
+            voice.targetFreq = spec.sweepToHz;
+            voice.freq = spec.frequencyHz;
+        }
     }
 
     // A silent channel has nothing to glide from, so it starts exactly where it was asked to.
     if (restart || !voice.active) {
-        voice.freq = voice.targetFreq;
+        if (voice.sweepPerSample == 1.0f) {
+            voice.freq = voice.targetFreq;
+        }
         voice.amp = voice.targetAmp;
         voice.gainL = voice.targetGainL;
         voice.gainR = voice.targetGainR;
@@ -201,7 +210,10 @@ void CueService::Render(int frames) {
         }
         // Targets only move between ticks, so ramping across the whole block is exactly the
         // smoothing a re-steered pan needs, and costs nothing beyond the four steps.
-        const float freqStep = (voice.targetFreq - voice.freq) * invFrames;
+        // A sweep runs at its own rate in time, not across the block, so its length is the
+        // cue's and not the queue's.
+        const bool sweeping = voice.sweepPerSample != 1.0f;
+        const float freqStep = sweeping ? 0.0f : (voice.targetFreq - voice.freq) * invFrames;
         const float ampStep = (voice.targetAmp - voice.amp) * invFrames;
         const float gainLStep = (voice.targetGainL - voice.gainL) * invFrames;
         const float gainRStep = (voice.targetGainR - voice.gainR) * invFrames;
@@ -242,13 +254,19 @@ void CueService::Render(int frames) {
             mMix[static_cast<size_t>(i) * kChannels + 1] += right;
             voicePeak = std::max(voicePeak, std::max(std::fabs(left), std::fabs(right)));
 
-            voice.freq += freqStep;
+            voice.freq = sweeping ? voice.freq * voice.sweepPerSample : voice.freq + freqStep;
             voice.amp += ampStep;
             voice.gainL += gainLStep;
             voice.gainR += gainRStep;
         }
 
-        voice.freq = voice.targetFreq;
+        if (!sweeping) {
+            voice.freq = voice.targetFreq;
+        } else if (voice.sweepPerSample > 1.0f) {
+            voice.freq = std::min(voice.freq, voice.targetFreq);  // holds the end note
+        } else {
+            voice.freq = std::max(voice.freq, voice.targetFreq);
+        }
         voice.amp = voice.targetAmp;
         voice.gainL = voice.targetGainL;
         voice.gainR = voice.targetGainR;

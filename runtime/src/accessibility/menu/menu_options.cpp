@@ -7,6 +7,7 @@
 #include "accessibility/race/drive_assist.h"
 #include "accessibility/race/item_beacon.h"
 #include "accessibility/race/track_limits.h"
+#include "accessibility/race/trick_beacon.h"
 #include "audio_backend.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -72,6 +73,9 @@ void PlayCueDemo(audio::CueChannel channel) {
             break;
         case audio::CueChannel::ItemBox:
             race::PlayItemBoxCueDemo();
+            break;
+        case audio::CueChannel::TrickRamp:
+            race::PlayTrickRampCueDemo();
             break;
         default:
             break;
@@ -207,6 +211,7 @@ void SettingsMenu::BuildOptions() {
     mOptions.push_back({"demo_edge", nullptr, nullptr, [] { race::PlayEdgeCueDemo(); }});
     mOptions.push_back({"demo_curve", nullptr, nullptr, [] { race::PlayCurveCueDemo(); }});
     mOptions.push_back({"demo_itembox", nullptr, nullptr, [] { race::PlayItemBoxCueDemo(); }});
+    mOptions.push_back({"demo_trickramp", nullptr, nullptr, [] { race::PlayTrickRampCueDemo(); }});
 }
 
 }  // namespace a11y::menu

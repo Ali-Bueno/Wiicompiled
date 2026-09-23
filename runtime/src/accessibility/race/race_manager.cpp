@@ -22,6 +22,7 @@
 #include "accessibility/race/race_state.h"
 #include "accessibility/race/roulette_volume.h"
 #include "accessibility/race/track_limits.h"
+#include "accessibility/race/trick_beacon.h"
 #include "runtime_config.h"
 
 namespace a11y::race {
@@ -32,6 +33,7 @@ DriveAssist g_driveAssist;
 TrackLimits g_trackLimits;
 RaceNarrator g_narrator;
 ItemBeacon g_itemBeacon;
+TrickBeacon g_trickBeacon;
 ItemAnnouncer g_itemAnnouncer;
 EnginePan g_enginePan;
 KartVolume g_kartVolume;
@@ -109,6 +111,7 @@ void ForgetRace() {
     g_driveAssist.Reset();
     g_trackLimits.Reset();
     g_itemBeacon.Reset();
+    g_trickBeacon.Reset();
     g_itemAnnouncer.Reset();
 }
 
@@ -353,6 +356,7 @@ void Tick() {
                  g_driveAssist.LastBearingDeg(), g_driveAssist.LastHorizonUnits());
     g_trackLimits.Tick(state, g_map, g_handedness, station, dtSec);
     g_itemBeacon.Tick(state, g_map, g_handedness, station, dtSec);
+    g_trickBeacon.Tick(state, g_map, g_handedness, station, dtSec);
     g_itemAnnouncer.Tick(state);
 
     // Speaks whether or not the course map read: lap and position come from the race record, not
