@@ -33,6 +33,9 @@ struct RaceState {
     // Duration of one guest frame in seconds, from the same TV-format read. Anything differentiated
     // per frame (the yaw estimate) divides by this, never by the host's frame time.
     float frameSec = 0.0f;
+    // The kart's top speed on plain road, units per frame: the engine class's multiplier times the
+    // vehicle's speed stat (Retro Rewind's 200cc and 500cc scale the stat). Zero when unread.
+    float baseSpeed = 0.0f;
     // The game's own 0..1 speed ratio, already capped. Preferred over anything self-calibrated: it
     // is correct from the first frame and is not skewed by a boost or by the engine class.
     float speedRatio = 0.0f;

@@ -1,9 +1,12 @@
 #ifndef MKW_ACCESSIBILITY_RACE_KCL_OBJECTS_H
 #define MKW_ACCESSIBILITY_RACE_KCL_OBJECTS_H
 
+#include <vector>
+
 namespace a11y::race {
 
 struct KclPicker;
+struct KclLaunchFace;
 
 // The collision meshes that are NOT in course.kcl: the objects that carry their own KCL - Mushroom
 // Gorge's caps, logs, the mine carts (docs/kcl-runtime.md §5). Without them the gorge crossing
@@ -30,6 +33,10 @@ struct KclObjects {
     // moving object's matrix is only valid for the frame it was read in.
     static void OfferFloors(float x, float z, float startY, float stopY, float referenceY,
                             KclPicker& picker);
+
+    // Every launch face of every probeable object, in world space at this frame's transforms. The
+    // bouncy mushrooms live only here. Call after Refresh; the meshes are small, so it is one pass.
+    static void CollectLaunchFaces(std::vector<KclLaunchFace>& out);
 
     // Objects skipped this refresh, split by cause. Diagnostics only, but the split is what tells
     // a permanent skip apart from a transient one: a null controller means the object had not

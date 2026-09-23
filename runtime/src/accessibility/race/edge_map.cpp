@@ -103,7 +103,6 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     if (!onFloorOut) {
         return false;
     }
-    out.launch = floor.launch;
     // Each side stops where this station's own stretch of course does, so a paved infield joined
     // to the road cannot be measured as road (CourseMap::LateralReach).
     const KclEdges edges =

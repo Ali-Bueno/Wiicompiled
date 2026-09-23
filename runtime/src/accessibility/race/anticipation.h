@@ -28,7 +28,8 @@ inline constexpr int kCountdownStages = 3;
 // decision (2026-09-03). The conversion uses one reference speed: the game's Standard Kart M
 // with Mario at 150cc, 79.77 units/frame at 50 fps (kartParam.bin + driverParam.bin, the
 // vehicle the radius ladder in course_curves.cpp is derived from too).
-inline constexpr float kReferenceSpeedUnitsPerSec = 79.77f * 50.0f;
+inline constexpr float kReferenceSpeedUnitsPerFrame = 79.77f;
+inline constexpr float kReferenceSpeedUnitsPerSec = kReferenceSpeedUnitsPerFrame * 50.0f;
 // A straight is a gap the whole countdown fits in at the reference speed; a shorter gap chains
 // the next corner to the previous one (it becomes a follower: no call of its own, no countdown).
 inline constexpr float kStraightUnits = kReferenceSpeedUnitsPerSec * kCountdownLeadSec[0];

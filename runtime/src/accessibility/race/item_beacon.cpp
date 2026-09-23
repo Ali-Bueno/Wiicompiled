@@ -174,9 +174,12 @@ void ItemBeacon::Tick(const RaceState& state, const CourseMap& map, const Handed
     const float pitch = 1.0f - behind * (1.0f - kBeaconPassedPitch);
     const float amplitude = kBeaconVolumeFar + (kBeaconVolumeNear - kBeaconVolumeFar) * nearness;
     const float arc = map.ArcOfPosition(state.x, state.z, station);
+    const float boxArc = map.ArcOfPosition(boxX, boxZ, map.NearestStation(boxX, boxZ, station));
     CueService::Instance().PlayOneShot(
         CueChannel::ItemBox,
-        MakeBeaconBlip(pitch, amplitude, RoadFramePan(map, arc, state, boxX, boxZ)));
+        MakeBeaconBlip(pitch, amplitude,
+                       RoadFramePan(map, arc, state, boxArc, boxX, boxZ,
+                                    BeaconRoadHalfWidth(map))));
 }
 
 }  // namespace a11y::race

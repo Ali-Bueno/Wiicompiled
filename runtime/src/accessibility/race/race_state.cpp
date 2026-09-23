@@ -50,6 +50,8 @@ constexpr std::uint32_t kHolderBodyMatrix = 0x9C;   // Kart::Link::GetMtx (0x805
 constexpr std::uint32_t kPhysicsPosition = 0x68;  // Kart::Link::SetKartPosition (0x80590238)
 
 constexpr std::uint32_t kMovementSpeed = 0x20;  // Kart::Link::GetEngineSpeed (0x80590CF8)
+// Kart::Movement::Reset (0x805784D4) stores the class multiplier (+0x10) times the speed stat here.
+constexpr std::uint32_t kMovementBaseSpeed = 0x14;
 // The axis the scalar speed is applied along: Movement::Update computes velocity as speed times
 // this vector, so it is the kart's forward direction and the sign of travel lives in the speed.
 constexpr std::uint32_t kMovementHeading = 0x74;
@@ -290,6 +292,7 @@ RaceState& ReadRaceState() {
     }
 
     TryFloat(movement + kMovementSpeedRatio, g_state.speedRatio);
+    TryFloat(movement + kMovementBaseSpeed, g_state.baseSpeed);
 
     std::uint16_t floorCollisionCount = 0;
     g_state.onGround = TryU16(movement + kMovementFloorCollisionCount, /*highHalf=*/true,

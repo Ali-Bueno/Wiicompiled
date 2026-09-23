@@ -20,6 +20,7 @@
 #include "accessibility/race/kmp_reader.h"
 #include "accessibility/race/race_narrator.h"
 #include "accessibility/race/race_state.h"
+#include "accessibility/race/ramp_map.h"
 #include "accessibility/race/roulette_volume.h"
 #include "accessibility/race/track_limits.h"
 #include "accessibility/race/trick_beacon.h"
@@ -127,6 +128,7 @@ void ForgetCourse() {
     g_kartVolume.Reset();
     g_rouletteVolume.Reset();
     EdgeMap::Reset();
+    RampMap::Reset();
     ForgetRace();
     // The surface latch lives here and is file-static, so without this the last course's off-road
     // is announced on the new course's grid.
@@ -296,6 +298,7 @@ void Tick() {
     // The real road edges, measured a couple of stations per tick until the course is covered,
     // then the authored route repaired only where it falls outside the kart's safe margin.
     EdgeMap::Tick(g_map, state.valid ? state.bodyHalfWidth : 0.0f, state.frameSec);
+    RampMap::Tick(g_map);
     // Behind the pause menu the game advances no time, so neither may any cue timer.
     const float dtSec = state.paused ? 0.0f : stepSec;
     // The cue renderer works in whole guest frames too, and takes their duration from here rather

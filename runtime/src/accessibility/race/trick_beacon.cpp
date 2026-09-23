@@ -1,11 +1,16 @@
 #include "accessibility/race/trick_beacon.h"
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/race/beacon_cue.h"
 #include "accessibility/race/course_map.h"
-#include "accessibility/race/edge_map.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/kcl_road.h"
 #include "accessibility/race/race_state.h"
+#include "accessibility/race/ramp_map.h"
 
 namespace a11y::race {
 namespace {
@@ -26,24 +31,54 @@ constexpr float kTrickBlipSec = 0.14f;
 constexpr float kTrickVolumeNear = 0.35f;
 constexpr float kTrickVolumeFar = 0.12f;
 
-// The first station of the next run of launch surfaces ahead of `seg`, or -1 when none begins
-// within `range` along the line. The run `seg` itself belongs to is skipped: a kart on the ramp
-// is past the point of aiming for it.
-int NextLaunchStation(const CourseMap& map, float arc, int seg, float range) {
-    const int count = map.StationCount();
-    bool inRun = EdgeMap::At(seg).launch;
-    for (int k = 1; k < count; ++k) {
-        const int s = (seg + k) % count;
-        if (map.ArcForwardTo(arc, s) > range) {
-            return -1;
+// A ramp too narrow to aim at below one lateral step is still aimed at as if it were that wide.
+constexpr float kMinRampHalfWidth = kKclLateralStepUnits;
+// The widest heading change a ramp may ask for and still be offered: the bearing the steering guide
+// already plays as its whole lean (guide_tuning.h default), a hard turn to a player.
+constexpr float kMaxApproachRad = 30.0f * (3.14159265f / 180.0f);
+
+// How far ahead a ramp begins, or a full lap when the kart is already past its start.
+float AheadOf(const CourseMap& map, float arc, const Ramp& ramp) {
+    return map.ArcBetween(arc, ramp.arcStart);
+}
+
+// The heading a ramp asks for: the sideways move onto it over the road left before it begins.
+float ApproachRad(const CourseMap& map, float arc, float kartAcross, const Ramp& ramp) {
+    const float offset =
+        std::fabs(RoadAcross(map, ramp.arcStart, ramp.entryX, ramp.entryZ) - kartAcross);
+    return std::atan2(std::max(offset - ramp.halfWidth, 0.0f), AheadOf(map, arc, ramp));
+}
+
+bool Reachable(const CourseMap& map, float arc, float kartAcross, float range, const Ramp& ramp) {
+    return AheadOf(map, arc, ramp) <= range &&
+           ApproachRad(map, arc, kartAcross, ramp) <= kMaxApproachRad;
+}
+
+// The next ramp to aim for: the first reachable one within range, or, among those beginning abreast
+// of it - within one road half-width along the line - the one asking for the least turn.
+int PickRamp(const CourseMap& map, float arc, float kartAcross, float range) {
+    const std::vector<Ramp>& ramps = RampMap::Ramps();
+    float first = range;
+    for (const Ramp& ramp : ramps) {
+        if (Reachable(map, arc, kartAcross, range, ramp)) {
+            first = std::min(first, AheadOf(map, arc, ramp));
         }
-        const bool launch = EdgeMap::At(s).launch;
-        if (launch && !inRun) {
-            return s;
-        }
-        inRun = launch;
     }
-    return -1;
+    const float abreast = first + BeaconRoadHalfWidth(map);
+    int best = -1;
+    float bestApproach = 0.0f;
+    for (int i = 0; i < static_cast<int>(ramps.size()); ++i) {
+        if (!Reachable(map, arc, kartAcross, range, ramps[i]) ||
+            AheadOf(map, arc, ramps[i]) > abreast) {
+            continue;
+        }
+        const float approach = ApproachRad(map, arc, kartAcross, ramps[i]);
+        if (best < 0 || approach < bestApproach) {
+            best = i;
+            bestApproach = approach;
+        }
+    }
+    return best;
 }
 
 // Shared by the live Tick blip and the menu demo, so the two constructions cannot drift apart.
@@ -71,13 +106,15 @@ void PlayTrickRampCueDemo() {
 
 void TrickBeacon::Reset() {
     mBlipTimer = 0.0f;
+    mTarget = -1;
     CueService::Instance().Stop(CueChannel::TrickRamp);
 }
 
 void TrickBeacon::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,
                        int station, float dtSec) {
     if (!state.valid || !state.driving || !map.Loaded() || !handedness.Known() ||
-        !EdgeMap::Ready()) {
+        !RampMap::Ready()) {
+        mTarget = -1;
         return;
     }
     mBlipTimer -= dtSec;
@@ -87,28 +124,29 @@ void TrickBeacon::Tick(const RaceState& state, const CourseMap& map, const Hande
 
     const float range = BeaconRange(state.speedPerSecond, map.MedianHalfWidth());
     const float arc = map.ArcOfPosition(state.x, state.z, station);
-    int seg = 0;
-    float t = 0.0f;
-    if (range <= 0.0f || !map.SegmentAtArc(arc, seg, t)) {
+    const float kartAcross = RoadAcross(map, arc, state.x, state.z);
+    const std::vector<Ramp>& ramps = RampMap::Ramps();
+    // Held until passed or out of reach, so two ramps abreast cannot trade places blip by blip.
+    if (mTarget < 0 || mTarget >= static_cast<int>(ramps.size()) ||
+        !Reachable(map, arc, kartAcross, range, ramps[mTarget])) {
+        mTarget = range > 0.0f ? PickRamp(map, arc, kartAcross, range) : -1;
+    }
+    if (mTarget < 0) {
         mBlipTimer = 0.0f;
         return;
     }
-    const int target = NextLaunchStation(map, arc, seg, range);
-    if (target < 0) {
-        mBlipTimer = 0.0f;
-        return;
-    }
-
-    float targetX = 0.0f, targetZ = 0.0f;
-    map.Centre(target, targetX, targetZ);
+    const Ramp& ramp = ramps[mTarget];
     mBlipTimer = kBeaconIntervalSec;
 
     // Distance along the line, not as the crow flies: the ramp is reached by following the road.
-    const float nearness = BeaconNearness(map.ArcForwardTo(arc, target), range);
+    const float nearness = BeaconNearness(AheadOf(map, arc, ramp), range);
     const float amplitude = kTrickVolumeFar + (kTrickVolumeNear - kTrickVolumeFar) * nearness;
+    // Full pan where the kart's centre would just miss the ramp's edge.
+    const float scale = std::max(ramp.halfWidth, kMinRampHalfWidth) + state.bodyHalfWidth;
     CueService::Instance().PlayOneShot(
         CueChannel::TrickRamp,
-        MakeTrickBlip(amplitude, RoadFramePan(map, arc, state, targetX, targetZ)));
+        MakeTrickBlip(amplitude, RoadFramePan(map, arc, state, ramp.arcStart, ramp.entryX,
+                                              ramp.entryZ, scale)));
 }
 
 }  // namespace a11y::race

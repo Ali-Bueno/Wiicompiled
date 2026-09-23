@@ -9,6 +9,7 @@
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/localization.h"
 #include "accessibility/race/anticipation.h"
+#include "accessibility/race/corner_technique.h"
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/screen_reader.h"
@@ -53,8 +54,9 @@ constexpr float kDemoCurvePan = 0.7f;
 constexpr int kDemoApproachStage = 0;  // the first of the three countdown beeps
 
 // One key per whole call ("curve_hard_right_long"), so each language file states the exact
-// phrase and word order, gender and agreement never leak into code.
-std::string CurvePhrase(const Curve& curve) {
+// phrase and word order, gender and agreement never leak into code; then the technique word when
+// the engine class asks more than the grade says (corner_technique.h).
+std::string CurvePhrase(const Curve& curve, float baseSpeed) {
     std::string key = "curve_";
     switch (curve.severity) {
         case TurnSeverity::Hairpin:
@@ -74,7 +76,18 @@ std::string CurvePhrase(const Curve& curve) {
     if (curve.isLong) {
         key += "_long";
     }
-    return loc::Get(key);
+    std::string phrase = loc::Get(key);
+    switch (ExtraTechnique(curve, baseSpeed)) {
+        case CornerTechnique::Drift:
+            phrase += loc::Get("curve_tech_drift");
+            break;
+        case CornerTechnique::Brake:
+            phrase += loc::Get("curve_tech_brake");
+            break;
+        default:
+            break;
+    }
+    return phrase;
 }
 
 // Centred, as in MK64: the countdown says *when*, not *where*.
@@ -216,7 +229,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
         // a phrase, and only once the kart is on open road; the phrase then chains what follows.
         if (i == nextIndex && !cue.called && (inside == nullptr || inside == &c) &&
             (within || lead <= kSpokenLeadSec)) {
-            std::string phrase = CurvePhrase(c);
+            std::string phrase = CurvePhrase(c, state.baseSpeed);
             cue.called = true;
             const Curve* last = &c;
             for (int chained = 1; chained < kMaxChain; ++chained) {
@@ -229,7 +242,7 @@ void DriveAssist::UpdateCurveCues(const RaceState& state, const CourseMap& map, 
                     break;
                 }
                 phrase += loc::Get("curve_then");
-                phrase += CurvePhrase(*next);
+                phrase += CurvePhrase(*next, state.baseSpeed);
                 mCues[k].called = true;
                 last = next;
             }

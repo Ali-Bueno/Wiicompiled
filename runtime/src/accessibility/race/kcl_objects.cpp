@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "accessibility/race/kcl_column.h"
+#include "accessibility/race/kcl_launch.h"
 #include "accessibility/race/kcl_mesh.h"
 #include "accessibility/race/kcl_prism.h"
 
@@ -276,6 +277,28 @@ void KclObjects::OfferFloors(float x, float z, float startY, float stopY, float 
         float wx = 0.0f, wy = 0.0f, wz = 0.0f;
         KclApplyMtx34(localToWorld, mx * scale, local.kept.y * scale, mz * scale, wx, wy, wz);
         KclOffer(picker, wy, local.kept.baseType, local.kept.launch);
+    }
+}
+
+void KclObjects::CollectLaunchFaces(std::vector<KclLaunchFace>& out) {
+    for (const KclObjectEntry& entry : g_objects) {
+        if (!entry.probeable) {
+            continue;
+        }
+        for (std::uint32_t i = 1; i <= entry.mesh.prismCount; ++i) {
+            KclFace face;
+            if (!KclPrismIsLaunch(entry.mesh, i) || !KclDecodePrism(entry.mesh, i, face)) {
+                continue;
+            }
+            // Mesh space back to world exactly as OfferFloors does: undo the scale, then the matrix.
+            KclLaunchFace world = KclFaceCorners(face);
+            for (int k = 0; k < 3; ++k) {
+                KclApplyMtx34(entry.localToWorld, world.x[k] * entry.scale,
+                              world.y[k] * entry.scale, world.z[k] * entry.scale, world.x[k],
+                              world.y[k], world.z[k]);
+            }
+            out.push_back(world);
+        }
     }
 }
 
