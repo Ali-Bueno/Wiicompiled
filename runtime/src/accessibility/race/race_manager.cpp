@@ -368,5 +368,4 @@ void Tick() {
     g_narrator.Tick(state, dtSec);
 }
 
-
 }  // namespace a11y::race
