@@ -60,6 +60,9 @@ constexpr Phrase kEnglishDefaults[] = {
     {"curve_hairpin_left_long", "hairpin left long"},
     {"curve_hairpin_right_long", "hairpin right long"},
     {"curve_then", " then "},
+    // The technique the engine class asks for beyond the grade word (corner_technique.h).
+    {"curve_tech_drift", ", drift"},
+    {"curve_tech_brake", ", brake"},
 
     {"position_1", "{n}st"},
     {"position_2", "{n}nd"},

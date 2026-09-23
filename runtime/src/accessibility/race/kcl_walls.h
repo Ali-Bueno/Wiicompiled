@@ -10,6 +10,11 @@ namespace a11y::race {
 // road corpus 2026-09-23).
 bool KclWallAcross(float x0, float z0, float x1, float z1, float floorY, float& t);
 
+// Whether a kart driving straight from (x0, z0) to (x1, z1) on a floor at `floorY` would meet a
+// wall on the way: KclWallAcross over the path in lateral-march steps, so a long path cannot skip
+// the leaves between its ends.
+bool KclWallBetween(float x0, float z0, float x1, float z1, float floorY);
+
 }  // namespace a11y::race
 
 #endif  // MKW_ACCESSIBILITY_RACE_KCL_WALLS_H

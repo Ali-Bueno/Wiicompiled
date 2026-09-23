@@ -1,11 +1,13 @@
 #include "accessibility/race/kcl_walls.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
 #include "accessibility/race/kcl_column.h"
 #include "accessibility/race/kcl_mesh.h"
 #include "accessibility/race/kcl_prism.h"
+#include "accessibility/race/kcl_road.h"
 
 namespace a11y::race {
 namespace {
@@ -103,6 +105,21 @@ bool KclWallAcross(float x0, float z0, float x1, float z1, float floorY, float& 
         }
     }
     return hit;
+}
+
+bool KclWallBetween(float x0, float z0, float x1, float z1, float floorY) {
+    const float length = std::hypot(x1 - x0, z1 - z0);
+    const int steps = std::max(1, static_cast<int>(std::ceil(length / kKclLateralStepUnits)));
+    float t = 0.0f;
+    for (int i = 0; i < steps; ++i) {
+        const float a = static_cast<float>(i) / static_cast<float>(steps);
+        const float b = static_cast<float>(i + 1) / static_cast<float>(steps);
+        if (KclWallAcross(x0 + (x1 - x0) * a, z0 + (z1 - z0) * a, x0 + (x1 - x0) * b,
+                          z0 + (z1 - z0) * b, floorY, t)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace a11y::race
