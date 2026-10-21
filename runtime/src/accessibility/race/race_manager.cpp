@@ -126,7 +126,6 @@ void ForgetCourse() {
     g_lifecycle.Reset();
     g_handedness.Forget();
     g_enginePan.Reset();
-    g_kartVolume.Reset();
     g_rouletteVolume.Reset();
     EdgeMap::Reset();
     RampMap::Reset();
