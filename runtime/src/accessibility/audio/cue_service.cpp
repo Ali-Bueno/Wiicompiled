@@ -11,8 +11,6 @@
 namespace a11y::audio {
 namespace {
 
-constexpr int kChannels = 2;
-
 // Three frames of audio kept queued. The tick that refills this is one frame apart, so three
 // survives a hitch, and the resulting latency stays under the ~100 ms where a cue starts to feel
 // detached from what caused it.
@@ -28,18 +26,10 @@ constexpr float kMaxFramePeriodSec = 1.0f / 50.0f;            // PAL 50 Hz, the 
 // a cue is still recognizable at, and it bounds a one-shot at four times its own length.
 constexpr float kMinPlaybackRate = 0.25f;
 
-constexpr float kInt16Peak = 32767.0f;
-
 // Per-sample envelope step for a ramp of the given length. A zero-length ramp steps straight to
 // the target rather than dividing by zero.
 float StepFor(float seconds) {
     return seconds > 0.0f ? 1.0f / (seconds * static_cast<float>(kSampleRate)) : 1.0f;
-}
-
-// The interpolator reads the position and the source sample after it, so this is the last position
-// that still produces audio - and the one a re-steered voice must be rewound from.
-bool SamplePlayable(const Sample& sample, float pos) {
-    return pos >= 0.0f && static_cast<size_t>(pos) + 1 < sample.mono.size();
 }
 
 }  // namespace
@@ -67,11 +57,13 @@ bool CueService::Start() {
         SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (!stream) {
         RT_LOGF(RT_TAG_A11Y, "cue audio: SDL_OpenAudioDeviceStream failed: %s\n", SDL_GetError());
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }
     if (!SDL_ResumeAudioStreamDevice(stream)) {
         RT_LOGF(RT_TAG_A11Y, "cue audio: SDL_ResumeAudioStreamDevice failed: %s\n", SDL_GetError());
         SDL_DestroyAudioStream(stream);
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }
     SDL_SetAudioStreamGain(stream, mMasterVolume);
@@ -88,6 +80,7 @@ void CueService::Shutdown() {
     }
     SDL_DestroyAudioStream(mStream);
     mStream = nullptr;
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
     for (Voice& voice : mVoices) {
         voice = Voice{};
     }
@@ -195,91 +188,6 @@ void CueService::Stop(CueChannel channel) {
 void CueService::StopAll() {
     for (int i = 0; i < static_cast<int>(CueChannel::Count); ++i) {
         Stop(static_cast<CueChannel>(i));
-    }
-}
-
-void CueService::Render(int frames) {
-    mMix.assign(static_cast<size_t>(frames) * kChannels, 0.0f);
-    const float invFrames = 1.0f / static_cast<float>(frames);
-    const float secPerSample = 1.0f / static_cast<float>(kSampleRate);
-    float loudestVoice = 0.0f;  // limiter knee, so one voice alone passes through untouched
-
-    for (Voice& voice : mVoices) {
-        if (!voice.active) {
-            continue;
-        }
-        // Targets only move between ticks, so ramping across the whole block is exactly the
-        // smoothing a re-steered pan needs, and costs nothing beyond the four steps.
-        // A sweep runs at its own rate in time, not across the block, so its length is the
-        // cue's and not the queue's.
-        const bool sweeping = voice.sweepPerSample != 1.0f;
-        const float freqStep = sweeping ? 0.0f : (voice.targetFreq - voice.freq) * invFrames;
-        const float ampStep = (voice.targetAmp - voice.amp) * invFrames;
-        const float gainLStep = (voice.targetGainL - voice.gainL) * invFrames;
-        const float gainRStep = (voice.targetGainR - voice.gainR) * invFrames;
-        float voicePeak = 0.0f;
-
-        for (int i = 0; i < frames; ++i) {
-            // A sample plays to its own end; only synthesized one-shots run on the timer.
-            if (!voice.sample && !voice.sustained && !voice.stopping) {
-                voice.remainingSec -= secPerSample;
-                if (voice.remainingSec <= 0.0f) {
-                    voice.stopping = true;
-                }
-            }
-            const float target = voice.stopping ? 0.0f : 1.0f;
-            const float step = target > voice.env ? voice.attackStep : voice.releaseStep;
-            voice.env += std::clamp(target - voice.env, -step, step);
-
-            float raw = 0.0f;
-            if (voice.sample) {
-                const std::vector<float>& pcm = voice.sample->mono;
-                if (SamplePlayable(*voice.sample, voice.samplePos)) {
-                    const size_t index = static_cast<size_t>(voice.samplePos);
-                    const float frac = voice.samplePos - static_cast<float>(index);
-                    raw = pcm[index] + (pcm[index + 1] - pcm[index]) * frac;
-                    voice.samplePos += voice.rate;
-                } else {
-                    voice.stopping = true;
-                }
-            } else {
-                raw = SampleWaveform(voice.shape, voice.phase);
-                voice.phase += voice.freq * secPerSample;
-                voice.phase -= std::floor(voice.phase);
-            }
-            const float sample = raw * voice.amp * voice.env * voice.channelVolume;
-            const float left = sample * voice.gainL;
-            const float right = sample * voice.gainR;
-            mMix[static_cast<size_t>(i) * kChannels] += left;
-            mMix[static_cast<size_t>(i) * kChannels + 1] += right;
-            voicePeak = std::max(voicePeak, std::max(std::fabs(left), std::fabs(right)));
-
-            voice.freq = sweeping ? voice.freq * voice.sweepPerSample : voice.freq + freqStep;
-            voice.amp += ampStep;
-            voice.gainL += gainLStep;
-            voice.gainR += gainRStep;
-        }
-
-        if (!sweeping) {
-            voice.freq = voice.targetFreq;
-        } else if (voice.sweepPerSample > 1.0f) {
-            voice.freq = std::min(voice.freq, voice.targetFreq);  // holds the end note
-        } else {
-            voice.freq = std::max(voice.freq, voice.targetFreq);
-        }
-        voice.amp = voice.targetAmp;
-        voice.gainL = voice.targetGainL;
-        voice.gainR = voice.targetGainR;
-        if (voice.stopping && voice.env <= 0.0f) {
-            voice.active = false;
-        }
-        loudestVoice = std::max(loudestVoice, voicePeak);
-    }
-
-    mOut.resize(mMix.size());
-    const float knee = std::min(loudestVoice, 1.0f);
-    for (size_t i = 0; i < mMix.size(); ++i) {
-        mOut[i] = static_cast<int16_t>(SoftLimit(mMix[i], knee) * kInt16Peak);
     }
 }
 

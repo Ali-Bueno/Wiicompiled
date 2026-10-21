@@ -89,6 +89,8 @@ public:
 
 private:
     CueService() = default;
+    static constexpr int kChannels = 2;
+    static bool SamplePlayable(const Sample& sample, float pos);
 
     struct Voice {
         bool active = false;

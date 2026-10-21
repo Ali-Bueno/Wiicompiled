@@ -108,8 +108,10 @@ void OnTextKey(const SDL_KeyboardEvent& event, SettingsMenu& menuInstance) {
         key > kLastSingleUnitCodepoint) {
         return;
     }
+    // Speech cleanup trims whitespace; a typed space still belongs in the name.
     menuInstance.Enqueue(MenuAction::Text,
-                         Utf16ToUtf8(std::u16string(1, static_cast<char16_t>(key))));
+                         key == SDLK_SPACE ? " "
+                                           : Utf16ToUtf8(std::u16string(1, static_cast<char16_t>(key))));
 }
 
 void OnKey(const SDL_KeyboardEvent& event) {

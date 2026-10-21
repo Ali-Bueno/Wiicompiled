@@ -37,7 +37,7 @@ class SettingsMenu {
 public:
     static SettingsMenu& Instance();
 
-    bool IsOpen() const { return mOpen; }
+    bool IsOpen() const { return mOpen.load(std::memory_order_relaxed); }
     // A row is taking typed text: the keyboard spells instead of navigating.
     bool IsEditingText() const { return mEditing.load(std::memory_order_relaxed); }
 
@@ -69,7 +69,7 @@ private:
 
     std::vector<Option> mOptions;
     int mFocus = 0;
-    bool mOpen = false;
+    std::atomic<bool> mOpen{false};
     bool mBuilt = false;
     std::atomic<bool> mEditing{false};
     NameEntry mNameEntry;

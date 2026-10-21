@@ -86,7 +86,7 @@ install folder. Fixing the cause and pressing Install again continues from where
 
 ## Updating
 
-You only download the installer once. To update, run it again and point it at your install
+To update, run the installer again and point it at your install
 folder: it looks up the releases on GitHub and tells you in the status line whether there's a
 newer one. **Update** takes you to the latest version. **Modify** installs whichever version is
 selected in the Version list, older ones included, in case a new release breaks something for
@@ -94,7 +94,11 @@ you.
 
 An update downloads a few megabytes (just the changed source) and then recompiles the game,
 which takes about as long as the first install did. Your settings, saves and disc data are left
-alone, and the game you already have keeps working if the update fails halfway.
+alone. If an update fails, the installer reports the error and keeps a log for diagnosis.
+
+Some releases require different build dependencies. In that case, the installer downloads
+the full installer and tells you to use a different, empty folder. Your current installation
+is kept; migrating those dependencies in the same folder is not supported yet.
 
 The game checks for updates itself too. When it starts and a newer mod version or a newer Retro
 Rewind is out, it says so right after "accessibility ready" and asks: Enter runs the update (the

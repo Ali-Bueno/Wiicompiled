@@ -7,32 +7,18 @@
 
 namespace a11y {
 
-// Upper bound on characters read from one guest string. nw4r allocates the real length through
-// TextBox::AllocStringBuffer, which we cannot see from a hook, so this is a defensive cap against
-// an unterminated or corrupt buffer walking guest memory. Chosen well above any Mario Kart Wii menu
-// string; raise it if a legitimate string is ever seen truncated.
+// Defensive cap for unterminated guest buffers, above normal MKWii menu-string lengths.
 inline constexpr std::size_t kMaxGuestTextChars = 512;
 
-// Reads a UTF-16BE string from guest memory and returns UTF-8 suitable for a screen reader.
-//
-// nw4r's wchar_t is 16 bits and guest memory is big-endian. Mario Kart Wii also substitutes BMG
-// tags (player names, numbers, button icons) into the composed string as private-use and control
-// code points, which a screen reader would either skip or read as garbage, so those are dropped and
-// the surrounding whitespace collapsed.
-//
-// Reading stops at the first NUL or after maxChars, whichever comes first, so a caller that already
-// knows the length (the 3-argument TextBox::SetString overload passes one) just passes it here.
-// Returns an empty string if the address is unmapped or the text is blank. Never throws.
+// Reads UTF-16BE through NUL or maxChars; strips BMG glyphs and trims/collapses whitespace.
+// Unmapped memory ends the read. Allocation failure returns empty text; never throws.
 std::string ReadGuestText(std::uint32_t guestAddr,
                           std::size_t maxChars = kMaxGuestTextChars) noexcept;
 
-// Same conversion and sanitising, for UTF-16 that is already in host memory - the text captured
-// character by character as the game composes it.
+// The same sanitising for host UTF-16. Unpaired surrogates are skipped; never throws.
 std::string Utf16ToUtf8(const std::u16string& text) noexcept;
 
-// The reverse, for text that goes INTO the game (the configured Mii name). Control characters
-// and anything outside the Basic Multilingual Plane are dropped: the game's name fields are
-// UCS-2 and a screen reader would not voice them anyway. Malformed bytes are skipped.
+// Mii names are UCS-2: drops controls, non-BMP characters and malformed UTF-8; never throws.
 std::u16string Utf8ToUtf16(const std::string& text) noexcept;
 
 }  // namespace a11y

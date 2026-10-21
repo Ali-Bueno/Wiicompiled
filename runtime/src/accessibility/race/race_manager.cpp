@@ -18,6 +18,7 @@
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/kart_volume.h"
 #include "accessibility/race/kmp_reader.h"
+#include "accessibility/race/race_lifecycle.h"
 #include "accessibility/race/race_narrator.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/race/ramp_map.h"
@@ -47,10 +48,7 @@ Handedness g_handedness;
 std::uint64_t g_courseSignature = 0;
 int g_lastStation = -1;
 
-// Last frame's readable/finished state, so a race restarting on the SAME course - which keeps the
-// course signature and so never reaches ForgetCourse - still gets its per-race services cleared.
-bool g_prevValid = false;
-bool g_prevFinished = false;
+RaceLifecycle g_lifecycle;
 
 // The lap the road shift last saw. A lap boundary is one of the two moments where moving the line
 // under the kart is harmless; -1 means there has been no lap to compare against yet.
@@ -108,6 +106,8 @@ float GuestFramesPerSecond() {
 // retry cannot inherit the previous race's spoken lap, position or finish. Only the services: the
 // frame's RaceState has already been read by the time this runs mid-tick.
 void ForgetRace() {
+    g_lastStation = -1;
+    g_lastShiftLap = -1;
     g_narrator.Reset();
     g_driveAssist.Reset();
     g_trackLimits.Reset();
@@ -121,8 +121,7 @@ void ForgetCourse() {
     g_lastStation = -1;
     g_routeRetryFrames = 0;
     g_lastShiftLap = -1;
-    g_prevValid = false;
-    g_prevFinished = false;
+    g_lifecycle.Reset();
     g_handedness.Forget();
     g_enginePan.Reset();
     g_kartVolume.Reset();
@@ -310,13 +309,10 @@ void Tick() {
 
     LogStateChange(state);
 
-    // A race restarted on the same course keeps the course signature, so ForgetCourse never runs
-    // and the finish would already be spoken - and the lap and position suppressed - on lap one.
-    if ((state.valid && !g_prevValid) || (state.driving && g_prevFinished)) {
+    // A same-course retry needs fresh cues; a failed read recovering does not.
+    if (g_lifecycle.StartsRace(state)) {
         ForgetRace();
     }
-    g_prevValid = state.valid;
-    g_prevFinished = state.finished;
 
     // Once the edges are known the unsafe route points are repaired (EdgeMap). Deferred to a
     // moment where moving the line under the kart cannot teleport the guide: the kart
