@@ -1,5 +1,7 @@
 #include "accessibility/race/track_limits.h"
 
+#include <algorithm>
+
 #include "accessibility/a11y_log.h"
 #include "accessibility/audio/cue_service.h"
 #include "accessibility/localization.h"
@@ -25,6 +27,10 @@ constexpr float kEdgeSideHoldSec = kLimitDebounceSec * 2.0f;
 // Wrong way is a held state, not an event, so it is re-announced while it holds.
 constexpr float kWrongWayRepeatSec = kSpokenLeadSec;
 
+// A spoken lead with no ledge on that side before it is named again: a stretch broken by a station
+// or two of kerb is still the same step to the player.
+constexpr float kLedgeRearmSec = kSpokenLeadSec;
+
 }  // namespace
 
 void TrackLimits::Reset() {
@@ -49,6 +55,10 @@ void TrackLimits::Reset() {
     mSideHoldSec = 0.0f;
     mGradeIsReal = false;
     mNearEdgeKind = EdgeKind::Unknown;
+    for (int side = 0; side < 2; ++side) {
+        mLedgeSaid[side] = false;
+        mLedgeClearSec[side] = 0.0f;
+    }
     CueService::Instance().Stop(CueChannel::Edge);
 }
 
@@ -151,6 +161,35 @@ void TrackLimits::UpdateWrongWay(bool wrongWay, float dtSec) {
     // Never interrupt: a repeating reminder that cuts off the corner calls would cost the player
     // the very information they need to turn around.
     ScreenReader::Instance().Speak(loc::Get("wrong_way"), /*interrupt=*/false);
+}
+
+// Never interrupts, for the same reason as the wrong-way reminder: a corner call cut off costs more.
+void TrackLimits::SayLedge(bool routeRight, bool earRight) {
+    if (!mNearEdge || mNearEdgeKind != EdgeKind::Ledge || mLedgeSaid[routeRight]) {
+        return;
+    }
+    mLedgeSaid[routeRight] = true;
+    mLedgeClearSec[routeRight] = 0.0f;
+    ScreenReader::Instance().Speak(loc::Get(earRight ? "ledge_right" : "ledge_left"),
+                                   /*interrupt=*/false);
+}
+
+// The line's own road, not the lane below: dropping off the step and climbing back is still the
+// stretch already named.
+void TrackLimits::UpdateLedgeStretch(const CourseMap& map, float arc, float dtSec) {
+    for (int side = 0; side < 2; ++side) {
+        if (!mLedgeSaid[side]) {
+            continue;
+        }
+        float distance = 0.0f;
+        EdgeKind kind = EdgeKind::Unknown;
+        const bool ledge = EdgeMap::SideAtArc(map, arc, side == 1, distance, kind) &&
+                           kind == EdgeKind::Ledge;
+        mLedgeClearSec[side] = ledge ? 0.0f : mLedgeClearSec[side] + dtSec;
+        if (mLedgeClearSec[side] >= kLedgeRearmSec) {
+            mLedgeSaid[side] = false;
+        }
+    }
 }
 
 void TrackLimits::Tick(const RaceState& state, const CourseMap& map, const Handedness& handedness,

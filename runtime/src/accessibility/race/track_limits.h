@@ -54,6 +54,11 @@ private:
     void StopEdgeChannel();
     // Which ear the cues pan to, held until a new side has lasted longer than a segment jump.
     bool PannedSideIsRight(bool towardsRight, bool haveOffset, float dtSec);
+    // Names a ledge once per stretch of it, in the kart's ear: every edge kind shares one sound,
+    // so this is the only way a step down is told apart from a wall or a fall.
+    void SayLedge(bool routeRight, bool earRight);
+    // Re-arms the word on a side once that side of the line has stopped being a ledge.
+    void UpdateLedgeStretch(const CourseMap& map, float arc, float dtSec);
 
     float mBeepTimer = 0.0f;
     // Kart yaw rate, radians per guest second, positive toward its right, from the heading of the
@@ -95,6 +100,10 @@ private:
     // Unknown while edge cues are off or the station never probed, which is what makes both the
     // beep variant and the spoken phrase fall back to their plain forms.
     EdgeKind mNearEdgeKind = EdgeKind::Unknown;
+    // The ledge word per side of the line (left, right): said for the stretch being driven, and
+    // how long that side has had no ledge, so a new stretch is named and riding one is not.
+    bool mLedgeSaid[2] = {false, false};
+    float mLedgeClearSec[2] = {0.0f, 0.0f};
 };
 
 // Menu preview: plays the held off-road tone as a one-shot, no race state needed.

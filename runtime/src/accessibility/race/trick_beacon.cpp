@@ -27,9 +27,13 @@ constexpr float kTrickBlipStartHz = 110.0f;
 constexpr float kTrickBlipEndHz = 2.0f * kTrickBlipStartHz;
 // The longer jump glide chosen after the first 90 ms cut sounded odd, 2026-09-14.
 constexpr float kTrickBlipSec = 0.14f;
-// A square carries more harmonics than the item box sine, so it sits lower to stay a hint.
-constexpr float kTrickVolumeNear = 0.35f;
-constexpr float kTrickVolumeFar = 0.12f;
+// A square carries more harmonics than the item box sine, so it sits lower to stay a hint; lowered
+// again from 0.35/0.12 when it covered the engine (player, 2026-10-21: "bajarlo un poquitin").
+constexpr float kTrickVolumeNear = 0.25f;
+constexpr float kTrickVolumeFar = 0.085f;
+// Never one ear alone, and less to one side than the edge cues' 0.85, so a ramp beside the road
+// never sounds like its edge (player, 2026-10-21: a small miss sent the ramp to one ear).
+constexpr float kTrickPanMax = 0.6f;
 
 // A ramp too narrow to aim at below one lateral step is still aimed at as if it were that wide.
 constexpr float kMinRampHalfWidth = kKclLateralStepUnits;
@@ -143,10 +147,10 @@ void TrickBeacon::Tick(const RaceState& state, const CourseMap& map, const Hande
     const float amplitude = kTrickVolumeFar + (kTrickVolumeNear - kTrickVolumeFar) * nearness;
     // Full pan where the kart's centre would just miss the ramp's edge.
     const float scale = std::max(ramp.halfWidth, kMinRampHalfWidth) + state.bodyHalfWidth;
-    CueService::Instance().PlayOneShot(
-        CueChannel::TrickRamp,
-        MakeTrickBlip(amplitude, RoadFramePan(map, arc, state, ramp.arcStart, ramp.entryX,
-                                              ramp.entryZ, scale)));
+    const float pan =
+        kTrickPanMax *
+        RoadFramePan(map, arc, state, ramp.arcStart, ramp.entryX, ramp.entryZ, scale);
+    CueService::Instance().PlayOneShot(CueChannel::TrickRamp, MakeTrickBlip(amplitude, pan));
 }
 
 }  // namespace a11y::race

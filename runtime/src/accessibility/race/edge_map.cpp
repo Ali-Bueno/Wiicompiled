@@ -42,6 +42,8 @@ int g_cursor = 0;
 int g_meshWaitFrames = 0;
 int g_bothEdges = 0;
 int g_fallEdges = 0;
+int g_ledgeEdges = 0;
+int g_lowerRoads = 0;  // stations with a road at the foot of a ledge, on either side
 // The course's real road scale, in world units. Anything measuring a length in track widths takes
 // it from here: the KMP corridor is the CPU lane, not the road, and the two can differ by 14x.
 float g_medianHalfWidth = 0.0f;
@@ -73,6 +75,9 @@ EdgeKind ClassifyEdge(const KclEdge& edge) {
     if (!edge.beyondHit) {
         return EdgeKind::Fall;  // nothing within a probe reach out there: it is a drop
     }
+    if (edge.ledge && edge.cause != KclSurface::Fall) {
+        return EdgeKind::Ledge;
+    }
     switch (edge.beyond) {
         case KclSurface::Fall:
             return EdgeKind::Fall;
@@ -85,6 +90,30 @@ EdgeKind ClassifyEdge(const KclEdge& edge) {
         default:
             return EdgeKind::Fall;
     }
+}
+
+// The road below a Ledge side, or nothing when the ground down there is not road. What ends it
+// reads as ClassifyEdge would, and nothing at all as a fall: the harsher warning is the safe way
+// to be wrong.
+LowerRoad LowerFrom(const KclEdge& edge, EdgeKind kind) {
+    LowerRoad lower;
+    if (kind != EdgeKind::Ledge || !(edge.lowerFar > edge.lowerNear)) {
+        return lower;
+    }
+    lower.valid = true;
+    lower.nearDistance = edge.lowerNear;
+    lower.farDistance = edge.lowerFar;
+    lower.edgeY = edge.edgeY;
+    if (edge.lowerOpen) {
+        lower.farKind = EdgeKind::Open;
+    } else if (edge.lowerEnd == KclSurface::Road) {
+        lower.farKind = EdgeKind::Wall;
+    } else if (edge.lowerEnd == KclSurface::Offroad) {
+        lower.farKind = EdgeKind::Offroad;
+    } else {
+        lower.farKind = EdgeKind::Fall;
+    }
+    return lower;
 }
 
 // Measures the surface the route stands on. A point in the air - a cannon, a jump - or over
@@ -116,6 +145,8 @@ bool ProbeStation(const CourseMap& map, int station, StationEdges& out, bool& on
     out.rightKind = edges.right.valid ? ClassifyEdge(edges.right) : EdgeKind::Unknown;
     out.leftDistance = edges.left.valid ? edges.left.distance : 0.0f;
     out.rightDistance = edges.right.valid ? edges.right.distance : 0.0f;
+    out.leftLower = edges.left.valid ? LowerFrom(edges.left, out.leftKind) : LowerRoad{};
+    out.rightLower = edges.right.valid ? LowerFrom(edges.right, out.rightKind) : LowerRoad{};
     // Placement is deliberately not done here: it needs every station so the repair stays smooth.
     out.shift = 0.0f;
     // Each side stands on its own: a line point hard against one boundary still measured the other
@@ -161,10 +192,12 @@ void MeasureMedianHalfWidth() {
 void LogSummary(const CourseMap& map) {
     const int stations = static_cast<int>(g_edges.size());
     RT_LOGF(RT_TAG_A11Y,
-            "edge map: %d stations, %d%% with both edges, %d%% fall-bounded, %d line stations repaired, %d object meshes "
-            "(%d skipped: %d ptr, %d hdr), real half-width %.0f, worst tick %.1f ms\n",
+            "edge map: %d stations, %d%% with both edges, %d%% fall-bounded, %d%% ledge-bounded (%d%% with road below), %d line stations repaired, "
+            "%d object meshes (%d skipped: %d ptr, %d hdr), real half-width %.0f, worst tick %.1f ms\n",
             stations, stations > 0 ? g_bothEdges * 100 / stations : 0,
-            stations > 0 ? g_fallEdges * 100 / stations : 0, g_shiftedStations, KclObjects::Count(),
+            stations > 0 ? g_fallEdges * 100 / stations : 0,
+            stations > 0 ? g_ledgeEdges * 100 / stations : 0,
+            stations > 0 ? g_lowerRoads * 100 / stations : 0, g_shiftedStations, KclObjects::Count(),
             KclObjects::SkippedCount(), KclObjects::SkippedPointerCount(),
             KclObjects::SkippedHeaderCount(), static_cast<double>(g_medianHalfWidth),
             g_worstTickMs);
@@ -245,6 +278,8 @@ const char* EdgeKindName(EdgeKind kind) {
             return "wall";
         case EdgeKind::Fall:
             return "fall";
+        case EdgeKind::Ledge:
+            return "ledge";
         default:
             return "unknown";
     }
@@ -257,6 +292,8 @@ void EdgeMap::Reset() {
     g_meshWaitFrames = 0;
     g_bothEdges = 0;
     g_fallEdges = 0;
+    g_ledgeEdges = 0;
+    g_lowerRoads = 0;
     g_medianHalfWidth = 0.0f;
     g_worstTickMs = 0.0;
     g_lineOnFloor.clear();
@@ -291,6 +328,10 @@ void EdgeMap::ConfirmShift(bool applied) {
         // the straight line this module already treats it as.
         e.leftDistance += e.shift;
         e.rightDistance -= e.shift;
+        e.leftLower.nearDistance += e.shift;
+        e.leftLower.farDistance += e.shift;
+        e.rightLower.nearDistance -= e.shift;
+        e.rightLower.farDistance -= e.shift;
         e.leftValid = e.leftKind != EdgeKind::Unknown && e.leftDistance >= kEdgeMapMinDistance;
         e.rightValid = e.rightKind != EdgeKind::Unknown && e.rightDistance >= kEdgeMapMinDistance;
     }
@@ -391,6 +432,12 @@ void EdgeMap::Tick(const CourseMap& map, float kartHalfWidth, float frameSec) {
             ++g_bothEdges;
             if (edges.leftKind == EdgeKind::Fall || edges.rightKind == EdgeKind::Fall) {
                 ++g_fallEdges;
+            }
+            if (edges.leftKind == EdgeKind::Ledge || edges.rightKind == EdgeKind::Ledge) {
+                ++g_ledgeEdges;
+            }
+            if (edges.leftLower.valid || edges.rightLower.valid) {
+                ++g_lowerRoads;
             }
         }
         g_edges[static_cast<std::size_t>(station)] = edges;

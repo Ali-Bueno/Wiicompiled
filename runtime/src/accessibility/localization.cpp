@@ -77,6 +77,8 @@ constexpr Phrase kEnglishDefaults[] = {
     {"off_road_fall", "off road, edge drop"},
     {"on_road", "on road"},
     {"wrong_way", "wrong way"},
+    {"ledge_left", "ledge on the left"},
+    {"ledge_right", "ledge on the right"},
 
     {"menu_opened",
      "accessibility settings. Up and down to choose, left and right to adjust, A to activate, B to close."},

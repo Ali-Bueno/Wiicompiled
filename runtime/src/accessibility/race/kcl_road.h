@@ -47,6 +47,16 @@ struct KclEdge {
     bool openEnded = false;               // still Road at the sampling limit
     KclSurface beyond = KclSurface::None;  // the surface past the edge
     bool beyondHit = false;                // false means nothing out there at all: a drop
+    // Solid ground past the edge, too far below to be this road but not a fall: a step the kart
+    // can drive off and cannot climb back up (RR N64 Luigi Raceway's 240 unit ledge).
+    bool ledge = false;
+    // With `ledge`: the road at the foot of the step, followed outwards like the road above. Empty
+    // (lowerFar == lowerNear) when the ground down there is not road.
+    float edgeY = 0.0f;                      // height of the last sample above, to tell the levels apart
+    float lowerNear = 0.0f;                  // first sample on the road below
+    float lowerFar = 0.0f;                   // last sample still on it
+    KclSurface lowerEnd = KclSurface::None;  // what ends it; Road means a wall, as for `cause`
+    bool lowerOpen = false;                  // still road where this station's stretch ends
 };
 
 struct KclEdges {
@@ -83,6 +93,9 @@ struct KclRoad {
 
     // The vertical reach of an unanchored probe, which is also the drop that counts as a fall.
     static float ProbeReach();
+    // How far apart two floors may be in height and still be one road: further than this below
+    // an edge is the ground a ledge drops onto.
+    static float SameSurfaceWindow();
 };
 
 }  // namespace a11y::race

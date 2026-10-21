@@ -8,6 +8,7 @@
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/guide_tuning.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/lower_lane.h"
 #include "accessibility/race/motion_prediction.h"
 #include "accessibility/race/race_state.h"
 #include "accessibility/race/track_limits.h"
@@ -72,11 +73,13 @@ constexpr float kSurfaceChangeSec = 0.15f;
 constexpr float kDemoEdgeSec = 0.8f;  // demo: long enough to hear the held tone timbre clearly
 constexpr float kDemoEdgePan = 0.7f;  // demo: the danger side sounds to the right
 
-// The held tone needs offRoad && onGround, and neither a wall scrape (still on road) nor a fall
-// (airborne) ever satisfies it. Unknown counts too: on the KMP-corridor fallback nothing is known
-// about what ends the road, so there is no tone the beeps could be handing over to.
+// The held tone needs offRoad && onGround, and neither a wall scrape (still on road), a fall
+// (airborne) nor a ledge (landing on road below) ever satisfies it. Unknown counts too: on the
+// KMP-corridor fallback nothing is known about what ends the road, so there is no tone the beeps
+// could be handing over to.
 bool KindHasNoTone(EdgeKind kind) {
-    return kind == EdgeKind::Unknown || kind == EdgeKind::Wall || kind == EdgeKind::Fall;
+    return kind == EdgeKind::Unknown || kind == EdgeKind::Wall || kind == EdgeKind::Fall ||
+           kind == EdgeKind::Ledge;
 }
 
 float GradeForMargin(float margin, float onsetMargin) {
@@ -86,6 +89,13 @@ float GradeForMargin(float margin, float onsetMargin) {
 // Margin from a lateral offset (signed to the track's right) to the edge on one side.
 float MarginToSide(float room, float lateral, bool right) {
     return room - (right ? lateral : -lateral);
+}
+
+// The road on one side of the lane being driven: the line's, or the road below a ledge while the
+// kart is down there (LowerLane), whose lateral is then measured from that road's middle.
+bool RoomAt(const CourseMap& map, float arc, bool right, float& distance, EdgeKind& kind) {
+    return LowerLane::Active() ? LowerLane::SideAtArc(map, arc, right, distance, kind)
+                               : EdgeMap::SideAtArc(map, arc, right, distance, kind);
 }
 
 float BeepIntervalSec(float nearness) {
@@ -148,10 +158,20 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // The kart continuous arc, resolved once: it anchors the lateral offset AND the edge lookup
     // below, so both describe the same point on the same line.
     const float arc = map.ArcOfPosition(state.x, state.z, station);
+    UpdateLedgeStretch(map, arc, dtSec);
     float offset = 0.0f;
     float nearX = 0.0f, nearZ = 0.0f, corridor = 0.0f;
     const bool haveOffset =
         map.RoadOffsetAtArc(arc, state.x, state.y, state.z, offset, &nearX, &nearZ, &corridor);
+    // Below a ledge everything here measures from the middle of the road down there instead.
+    const float lane = LowerLane::CentreAt(map, arc);
+    if (haveOffset && lane != 0.0f && corridor > 0.0f) {
+        float laneX = 0.0f, laneZ = 0.0f;
+        map.RightVectorAtArc(arc, laneX, laneZ);
+        nearX += laneX * lane;
+        nearZ += laneZ * lane;
+        offset -= lane / corridor;
+    }
 
     // Which EAR the danger is in, in the kart own frame - the same derivation the steering guide
     // uses, through the same Handedness object. Taking the sign from the route frame instead named
@@ -179,7 +199,7 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
     // road, and the limiter's re-arm never saw the switchover.
     const bool haveRealScale = EdgeMap::WarningDistance() > 0.0f;
     bool haveReal = haveOffset && haveRealScale &&
-                    EdgeMap::SideAtArc(map, arc, edgeOnRight, realDistance, kind);
+                    RoomAt(map, arc, edgeOnRight, realDistance, kind);
     const float lateralUnits = offset * corridor;
     float margin = haveReal ? MarginToSide(realDistance, lateralUnits, edgeOnRight) : 0.0f;
 
@@ -205,6 +225,10 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
         EdgeKind fKind = EdgeKind::Unknown;
         if (map.RoadOffsetAtArc(futureArc, fx, state.y, fz, fOffset, nullptr, nullptr,
                                 &fCorridor)) {
+            const float fLane = LowerLane::CentreAt(map, futureArc);
+            if (fLane != 0.0f && fCorridor > 0.0f) {
+                fOffset -= fLane / fCorridor;
+            }
             predictedOffset = fOffset;
             const float fLateral = fOffset * fCorridor;
             const bool fRight = fLateral > 0.0f;
@@ -215,7 +239,11 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
             // lateral keeps the anticipation: a line curving away under a kart not turning enough
             // still grows it. One room for both margins is also what EdgeMagnitude's single
             // onset band assumes.
-            if (haveRealScale && EdgeMap::SideAtArc(map, arc, fRight, fRoom, fKind)) {
+            // A ledge is graded where the kart is, never where it is heading: on a banked lane
+            // every turn back to the line predicted the inner step and fought the guide (N64
+            // Luigi Raceway, 2026-10-21), and the drop lands on a road, not in a wall.
+            if (haveRealScale && RoomAt(map, arc, fRight, fRoom, fKind) &&
+                fKind != EdgeKind::Ledge) {
                 predictedMargin = MarginToSide(fRoom, fLateral, fRight);
                 // The side about to be lost is the side that is graded and heard, even when
                 // the kart currently sits nearer the other one.
@@ -330,6 +358,9 @@ void TrackLimits::UpdateEdge(const RaceState& state, const CourseMap& map,
         mBeepTimer = 0.0f;  // the first beep of an approach is immediate
         mBeepLevel = kEdgeOnset;
     }
+    // The ear unheld: a ledge is only graded on the kart's own side, and the held pan still
+    // carried the previous approach's side when the word was chosen.
+    SayLedge(edgeOnRight, earRight);
     if (!mNearEdge) {
         return;
     }

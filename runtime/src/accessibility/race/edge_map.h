@@ -15,6 +15,7 @@ enum class EdgeKind : std::uint8_t {
     Offroad,  // grass, dirt, sand: slow, recoverable
     Wall,     // solid, with road still behind it: a scrape
     Fall,     // void or a drop past recovery - the one the player must hear differently
+    Ledge,    // a step down onto solid ground: passable, but not climbable back from below
 };
 
 const char* EdgeKindName(EdgeKind kind);
@@ -25,6 +26,16 @@ const char* EdgeKindName(EdgeKind kind);
 // placed with only the kart's own clearance put "on the line" 103 units from grass (2026-09-02).
 // A drop keeps this share of its own local half-width clear as well, whichever is larger.
 inline constexpr float kEdgeOnsetRealFraction = 0.5f;
+
+// The road at the foot of a Ledge side, measured from the line like the edge itself: where it
+// starts past the step, where it ends and what ends it, and the height of the edge above it.
+struct LowerRoad {
+    bool valid = false;
+    float nearDistance = 0.0f;
+    float farDistance = 0.0f;
+    EdgeKind farKind = EdgeKind::Unknown;
+    float edgeY = 0.0f;
+};
 
 // The real road at one station, in world units either side of the line. The two sides are valid
 // independently: a route point that sits within one march step of the left boundary still has a
@@ -46,10 +57,13 @@ struct StationEdges {
     // own safe band - the TOTAL correction from where the course authored it. Zero on a station the
     // route already placed well, which is most of them.
     float shift = 0.0f;
+    LowerRoad leftLower;
+    LowerRoad rightLower;
 
     bool Valid(bool right) const { return right ? rightValid : leftValid; }
     float Distance(bool right) const { return right ? rightDistance : leftDistance; }
     EdgeKind Kind(bool right) const { return right ? rightKind : leftKind; }
+    const LowerRoad& Lower(bool right) const { return right ? rightLower : leftLower; }
 };
 
 // The real road edges of the loaded course, measured once from the collision mesh.

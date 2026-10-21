@@ -54,6 +54,51 @@ int SamplesFor(float reach) {
     return std::min(static_cast<int>(reach / kKclLateralStepUnits), kLateralSamples);
 }
 
+bool DrivenSurface(KclSurface surface, bool offroadIsRoad) {
+    return surface == KclSurface::Road || (offroadIsRoad && surface == KclSurface::Offroad);
+}
+
+// The road at the foot of a ledge, followed outwards from its first sample as the sweep followed
+// the road above, so a kart down there has a road of its own to be measured against.
+void KclSweepLower(float x, float z, float dirX, float dirZ, float start, float startY,
+                   int samples, bool offroadIsRoad, KclEdge& edge) {
+    edge.lowerNear = start;
+    edge.lowerFar = start;
+    const KclFloor first = KclRoad::ProbeFloorNear(x + dirX * start, z + dirZ * start, startY,
+                                                   kEdgeBankWindowUnits);
+    if (!first.hit || !DrivenSurface(first.category, offroadIsRoad)) {
+        edge.lowerEnd = first.hit ? first.category : KclSurface::None;
+        return;
+    }
+    float referenceY = first.y;
+    const int from = static_cast<int>(std::lround(start / kKclLateralStepUnits));
+    for (int i = from + 1; i <= samples; ++i) {
+        const float distance = kKclLateralStepUnits * static_cast<float>(i);
+        const float previous = distance - kKclLateralStepUnits;
+        float across = 0.0f;
+        if (KclWallAcross(x + dirX * previous, z + dirZ * previous, x + dirX * distance,
+                          z + dirZ * distance, referenceY, across)) {
+            edge.lowerFar = previous + across * kKclLateralStepUnits;
+            edge.lowerEnd = KclSurface::Road;
+            return;
+        }
+        const KclFloor floor = KclRoad::ProbeFloorNear(x + dirX * distance, z + dirZ * distance,
+                                                       referenceY, kEdgeBankWindowUnits);
+        if (!floor.hit || std::fabs(floor.y - startY) > kEdgeDriftLimitUnits) {
+            edge.lowerEnd = KclSurface::None;
+            return;
+        }
+        if (!DrivenSurface(floor.category, offroadIsRoad)) {
+            edge.lowerEnd = floor.category;
+            return;
+        }
+        edge.lowerFar = distance;
+        referenceY = floor.y;
+    }
+    edge.lowerEnd = KclSurface::Road;
+    edge.lowerOpen = true;
+}
+
 // Walks outwards one step at a time, carrying the last surface height forward so a sloped road is
 // followed rather than dropped. The distance reported is the last sample that was still road, so it
 // is a lower bound with the step as its resolution.
@@ -67,6 +112,10 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
     float referenceY = y;
     float edgeY = y;
     float stopped = 0.0f;
+    // The floor vanished from the bank window in one step: the only stop a ledge can come from. A
+    // steep bank that trips the drift limit, or a surface change, is not a step (Rainbow Road
+    // 919/920/1214, DK Summit's snow slope).
+    bool stepped = false;
     for (int i = 1; i <= samples; ++i) {
         const float distance = kKclLateralStepUnits * static_cast<float>(i);
         // A wall across this step ends the road where it stands, whatever floor runs on under it:
@@ -86,6 +135,7 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
         stopped = distance;
         if (!floor.hit) {
             edge.cause = KclSurface::None;
+            stepped = true;
             break;
         }
         // Climbing away from the line one bank window at a time is how a sweep walks up a wall onto
@@ -94,8 +144,7 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
             edge.cause = KclSurface::None;
             break;
         }
-        if (floor.category != KclSurface::Road &&
-            !(offroadIsRoad && floor.category == KclSurface::Offroad)) {
+        if (!DrivenSurface(floor.category, offroadIsRoad)) {
             edge.cause = floor.category;
             break;
         }
@@ -115,6 +164,9 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
     // never just the first: a 50 unit grass verge with a cliff behind it is a fall, and stopping at
     // the verge would have called it recoverable. Only road behind the boundary is conclusive.
     bool fall = false;
+    bool ledge = false;
+    float lowerStart = 0.0f;
+    float lowerY = 0.0f;
     for (int k = 1; k <= kEdgeBeyondSteps; ++k) {
         const float distance = stopped + kKclLateralStepUnits * static_cast<float>(k);
         const KclFloor floor = KclRoad::ProbeFloorNear(x + dirX * distance, z + dirZ * distance,
@@ -123,8 +175,16 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
             continue;  // nothing there, or a bridge overhead: neither is ground beyond this edge
         }
         edge.beyondHit = true;
+        // A deck below, still within the probe reach, is ground the kart lands on unless it is
+        // itself a fall surface.
         if (edgeY - floor.y > kEdgeSameSurfaceUnits) {
-            fall = true;  // a deck far below is a drop whatever it is paved with
+            if (floor.category == KclSurface::Fall) {
+                fall = true;
+            } else if (!ledge) {
+                ledge = true;
+                lowerStart = distance;
+                lowerY = floor.y;
+            }
             continue;
         }
         if (floor.category == KclSurface::Road) {
@@ -139,6 +199,10 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
     }
     if (fall) {
         edge.beyond = KclSurface::Fall;  // outranks a shoulder: the worst of the span is the truth
+    } else if (ledge && stepped && edge.beyond != KclSurface::Road) {
+        edge.ledge = true;  // road at this level behind the boundary still makes it a wall
+        edge.edgeY = edgeY;
+        KclSweepLower(x, z, dirX, dirZ, lowerStart, lowerY, samples, offroadIsRoad, edge);
     }
     return edge;
 }
@@ -146,6 +210,8 @@ KclEdge KclSweepSide(float x, float y, float z, float dirX, float dirZ, int samp
 }  // namespace
 
 float KclRoad::ProbeReach() { return kEdgeProbeReachUnits; }
+
+float KclRoad::SameSurfaceWindow() { return kEdgeSameSurfaceUnits; }
 
 KclEdges KclRoad::ProbeEdges(float x, float y, float z, float rightX, float rightZ,
                              float leftReach, float rightReach, bool offroadIsRoad) {

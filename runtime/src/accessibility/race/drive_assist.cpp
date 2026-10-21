@@ -6,6 +6,7 @@
 #include "accessibility/race/edge_map.h"
 #include "accessibility/race/guide_tuning.h"
 #include "accessibility/race/heading.h"
+#include "accessibility/race/lower_lane.h"
 #include "accessibility/race/race_state.h"
 
 namespace a11y::race {
@@ -68,7 +69,16 @@ void DriveAssist::UpdateSteering(const RaceState& state, const CourseMap& map,
         if (map.LapLength() > 0.0f)
             horizon = std::min(horizon, map.LapLength() * kMaxHorizonLapFraction);
         float aimX = 0.0f, aimZ = 0.0f;
-        have = map.PointAtArc(map.WrapForward(arc + horizon), aimX, aimZ);
+        const float aimArc = map.WrapForward(arc + horizon);
+        have = map.PointAtArc(aimArc, aimX, aimZ);
+        // Below a ledge the line above cannot be reached: the aim runs along the road down there.
+        const float lane = LowerLane::CentreAt(map, aimArc);
+        if (have && lane != 0.0f) {
+            float lrx = 0.0f, lrz = 0.0f;
+            map.RightVectorAtArc(aimArc, lrx, lrz);
+            aimX += lrx * lane;
+            aimZ += lrz * lane;
+        }
         if (have) {
             const float dx = aimX - state.x, dz = aimZ - state.z;
             // Positive with the aim point on the kart's right.

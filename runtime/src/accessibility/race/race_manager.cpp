@@ -18,6 +18,7 @@
 #include "accessibility/race/guest_read.h"
 #include "accessibility/race/kart_volume.h"
 #include "accessibility/race/kmp_reader.h"
+#include "accessibility/race/lower_lane.h"
 #include "accessibility/race/race_lifecycle.h"
 #include "accessibility/race/race_narrator.h"
 #include "accessibility/race/race_state.h"
@@ -111,6 +112,7 @@ void ForgetRace() {
     g_narrator.Reset();
     g_driveAssist.Reset();
     g_trackLimits.Reset();
+    LowerLane::Reset();
     g_itemBeacon.Reset();
     g_trickBeacon.Reset();
     g_itemAnnouncer.Reset();
@@ -203,7 +205,7 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
     RT_LOGF(RT_TAG_A11Y,
             "telemetry: cp=%d arc=%.0f kartfwd=(%.2f,%.2f) trackfwd=(%.2f,%.2f) "
             "trackright=(%.2f,%.2f) align=%.2f lat_u=%.0f road=%.0f lateral=%.2f(%d) "
-            "bearing=%+.1f horizon=%.0f pan=%.2f speed=%.1f\n",
+            "bearing=%+.1f horizon=%.0f pan=%.2f speed=%.1f lower=%.0f\n",
             state.checkpoint, static_cast<double>(arc), static_cast<double>(state.forwardX),
             static_cast<double>(state.forwardZ), static_cast<double>(trackX),
             static_cast<double>(trackZ), static_cast<double>(rightX),
@@ -211,7 +213,8 @@ void LogTelemetry(const RaceState& state, const CourseMap& map, int station, flo
             static_cast<double>(lateralUnits), static_cast<double>(realDistance),
             static_cast<double>(lateral), haveLateral ? 1 : 0,
             static_cast<double>(bearingDeg), static_cast<double>(horizonUnits),
-            static_cast<double>(pan), static_cast<double>(state.speed));
+            static_cast<double>(pan), static_cast<double>(state.speed),
+            static_cast<double>(LowerLane::CentreAt(map, arc)));
 }
 
 // Where on the course the player is. The game's own checkpoint index is preferred over searching
@@ -338,6 +341,8 @@ void Tick() {
         g_handedness.Observe(state, g_map, station);
     }
 
+    // Which road the kart is on decides what the guide and the edge cues below measure from.
+    LowerLane::Update(state, g_map, station);
     g_driveAssist.Tick(state, g_map, g_handedness, station, dtSec);
     // The steering guide's only output, applied to the game's own engine note. When not guiding
     // the engine is handed back to the game rather than pinned to the centre.
