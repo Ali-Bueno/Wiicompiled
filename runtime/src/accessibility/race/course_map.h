@@ -73,7 +73,8 @@ public:
     bool ApplyRoadShift(const std::vector<float>& shifts);
     bool RoadShifted() const { return mRoadShifted; }
 
-    // The station the game's checkpoint index corresponds to, or -1 when out of range.
+    // The station the game's checkpoint index corresponds to, or -1 when out of range or on a
+    // branch the lap does not take.
     int StationForCheckpoint(int checkpoint) const;
 
     void Centre(int i, float& x, float& z) const;

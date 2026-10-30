@@ -4,6 +4,8 @@
 #include "accessibility/race/course_map.h"
 #include "accessibility/race/guest_read.h"
 
+#include <unordered_map>
+
 namespace a11y::race {
 namespace {
 
@@ -25,6 +27,14 @@ constexpr std::uint32_t kSectionCount = 0x04;
 // KMP::Holder<CKPT> keeps the raw entry at +0, and caches a midpoint and a unit normal the game
 // computes once at parse time.
 constexpr std::uint32_t kHolderRawEntry = 0x00;
+
+// KMP::Holder<CKPT>::InitLinks (0x80515624) writes the successor count as a u16 at +0x04 and the
+// successors into LinkedCKPT[6] at +0x38, 24 bytes a slot, each opening with the next holder.
+// It takes them from the raw next byte inside a group and from the CKPH next groups at its end.
+constexpr std::uint32_t kCkptHolderNextCount = 0x04;
+constexpr std::uint32_t kCkptHolderNextLinks = 0x38;
+constexpr std::uint32_t kLinkedCkptStride = 0x18;
+constexpr std::uint32_t kLinkedCkptHolder = 0x00;
 
 // The raw CKPT entry: two edge points in the horizontal plane, 20 bytes per entry.
 constexpr std::uint32_t kCkptLeftX = 0x00;
@@ -79,7 +89,8 @@ constexpr std::uint8_t kNoRouteLink = 0xFF;
 constexpr std::uint32_t kMaxRoutePoints = kNoRouteLink;
 
 // A course with more checkpoints than this is not a course; the read is bounded so a bad pointer
-// cannot spin the frame tick. Checkpoints carry no u8 links, so they are not capped by the above.
+// cannot spin the frame tick. Checkpoint links are holder pointers, not u8 indices, so the cap
+// above does not apply.
 constexpr std::uint32_t kMaxCheckpoints = 1024;
 
 // Once per run: the route read is retried every frame until it succeeds, and a course of this
@@ -294,6 +305,42 @@ bool ReadRouteStartPoint(std::uint8_t& out) {
     return TryU8(holder + kKtptHolderStartEnpt, out);
 }
 
+namespace {
+
+// All or nothing: one unreadable or foreign link would wire the walk wrongly, so on any failure
+// every checkpoint keeps no links and the map orders them by index as before.
+bool ReadCheckpointLinks(const std::vector<std::uint32_t>& holders, std::vector<Checkpoint>& out) {
+    std::unordered_map<std::uint32_t, std::uint16_t> indexOf;
+    for (std::size_t i = 0; i < holders.size(); ++i) {
+        indexOf.emplace(holders[i], static_cast<std::uint16_t>(i));
+    }
+    for (std::size_t i = 0; i < holders.size(); ++i) {
+        std::uint16_t count = 0;
+        if (!TryU16(holders[i] + kCkptHolderNextCount, /*highHalf=*/true, count) ||
+            count > kMaxCheckpointLinks) {
+            return false;
+        }
+        Checkpoint& cp = out[i];
+        for (std::uint16_t k = 0; k < count; ++k) {
+            std::uint32_t next = 0;
+            if (!TryPointer(holders[i] + kCkptHolderNextLinks + k * kLinkedCkptStride +
+                                kLinkedCkptHolder,
+                            next)) {
+                return false;
+            }
+            const auto found = indexOf.find(next);
+            if (found == indexOf.end()) {
+                return false;
+            }
+            cp.next[k] = found->second;
+        }
+        cp.nextCount = static_cast<std::uint8_t>(count);
+    }
+    return true;
+}
+
+}  // namespace
+
 bool ReadCourseCheckpoints(std::vector<Checkpoint>& out) {
     out.clear();
 
@@ -316,6 +363,8 @@ bool ReadCourseCheckpoints(std::vector<Checkpoint>& out) {
     }
 
     out.reserve(count);
+    std::vector<std::uint32_t> holderAddrs;
+    holderAddrs.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint32_t holder = 0;
         std::uint32_t raw = 0;
@@ -324,6 +373,7 @@ bool ReadCourseCheckpoints(std::vector<Checkpoint>& out) {
             out.clear();
             return false;
         }
+        holderAddrs.push_back(holder);
 
         Checkpoint station;
         if (!TryFloat(raw + kCkptLeftX, station.leftX) ||
@@ -336,7 +386,14 @@ bool ReadCourseCheckpoints(std::vector<Checkpoint>& out) {
         out.push_back(station);
     }
 
-    RT_LOGF(RT_TAG_A11Y, "course map: %u checkpoints read\n", static_cast<unsigned>(count));
+    const bool linked = ReadCheckpointLinks(holderAddrs, out);
+    if (!linked) {
+        for (Checkpoint& cp : out) {
+            cp.nextCount = 0;
+        }
+    }
+    RT_LOGF(RT_TAG_A11Y, "course map: %u checkpoints read, %s\n", static_cast<unsigned>(count),
+            linked ? "with the game's links" : "links unread, index order");
     return true;
 }
 

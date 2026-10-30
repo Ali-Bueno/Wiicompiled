@@ -9,9 +9,16 @@ namespace a11y::race {
 // A KMP checkpoint: the track's left and right edge at one station along the lap, in the
 // horizontal plane. These are lap-validation volumes and are much wider than the road, so they are
 // used for progress and for the left/right convention, never for geometry.
+// The most successors a checkpoint can have: KMP::Holder<CKPT> carries six LinkedCKPT slots.
+inline constexpr int kMaxCheckpointLinks = 6;
+
 struct Checkpoint {
     float leftX = 0.0f, leftZ = 0.0f;
     float rightX = 0.0f, rightZ = 0.0f;
+    // The game's own successors, as checkpoint indices. Index order is not the lap where the
+    // checkpoint groups branch; a list read without links has nextCount 0 everywhere.
+    std::uint8_t nextCount = 0;
+    std::uint16_t next[kMaxCheckpointLinks] = {};
 };
 
 // The most successors a route point can have. A raw ENPH group states up to six next groups, so a
@@ -60,10 +67,9 @@ std::uint64_t CourseSignature();
 // Reads the checkpoint list of the loaded course. False if no course is loaded or the list did not
 // read cleanly, in which case `out` is left empty.
 //
-// Kept in the KMP's own entry order, which matters twice over: it is the order the checkpoint
-// groups run in, and it is the order the game's own per-player checkpoint index refers to, so that
-// index can be used directly instead of searching for the nearest station. The cost is that a
-// course whose groups branch and rejoin may order its side path oddly.
+// Kept in the KMP's own entry order, because that is the order the game's own per-player
+// checkpoint index refers to. Where the groups branch that order is not the lap's; each
+// checkpoint's successor links give the lap.
 bool ReadCourseCheckpoints(std::vector<Checkpoint>& out);
 
 // Reads the AI route (KMP ENPT) of the loaded course, successor links included.

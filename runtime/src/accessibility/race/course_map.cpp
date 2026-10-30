@@ -382,18 +382,77 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
     if (checkpoints.empty()) {
         return;
     }
+    const std::size_t total = checkpoints.size();
 
-    // Each checkpoint is bound from the previous one's station, so the mapping walks the lap in
-    // order instead of letting a crossover snap a midpoint onto the far branch. Only the first is
-    // a global search, having no predecessor to start from.
-    int hint = -1;
-    for (std::size_t c = 0; c < checkpoints.size(); ++c) {
+    // The game's own links when they were read, otherwise the next index.
+    const bool linked = std::any_of(checkpoints.begin(), checkpoints.end(),
+                                    [](const Checkpoint& cp) { return cp.nextCount > 0; });
+    const auto forEachSuccessor = [&](std::size_t c, const auto& visit) {
+        if (!linked) {
+            visit((c + 1) % total);
+            return;
+        }
         const Checkpoint& cp = checkpoints[c];
-        const float midX = (cp.leftX + cp.rightX) * 0.5f;
-        const float midZ = (cp.leftZ + cp.rightZ) * 0.5f;
-        hint = NearestStation(midX, midZ, hint);
-        mStationForCheckpoint[c] = hint;
+        for (std::uint8_t k = 0; k < cp.nextCount; ++k) {
+            if (cp.next[k] < total) {
+                visit(static_cast<std::size_t>(cp.next[k]));
+            }
+        }
+    };
+
+    // Each checkpoint is bound from its predecessor's station, so the mapping walks the lap in
+    // order instead of letting a crossover snap a midpoint onto the far branch. Breadth-first over
+    // the links, because index order jumps between branches; only a checkpoint with no
+    // predecessor reached is a global search.
+    std::vector<int> hintFor(total, -1);
+    std::vector<bool> reached(total, false);
+    std::vector<std::size_t> order;
+    order.reserve(total);
+    int offLap = 0;
+    for (std::size_t root = 0; root < total; ++root) {
+        if (reached[root]) {
+            continue;
+        }
+        reached[root] = true;
+        order.push_back(root);
+        for (std::size_t head = order.size() - 1; head < order.size(); ++head) {
+            const std::size_t c = order[head];
+            const Checkpoint& cp = checkpoints[c];
+            const float midX = (cp.leftX + cp.rightX) * 0.5f;
+            const float midZ = (cp.leftZ + cp.rightZ) * 0.5f;
+            // The quad runs wall to wall, so a road the lap takes crosses it; a station farther
+            // than its half-span plus one spacing means the checkpoint is on a branch the lap
+            // does not take, and binding it would put the kart on the wrong road.
+            const float reach =
+                Hypot2(cp.rightX - cp.leftX, cp.rightZ - cp.leftZ) * 0.5f + mMeanSpacing;
+            const auto crosses = [&](int s) {
+                float cx, cz;
+                Centre(s, cx, cz);
+                return Hypot2(midX - cx, midZ - cz) <= reach;
+            };
+            int station = NearestStation(midX, midZ, hintFor[c]);
+            if (crosses(station)) {
+                mStationForCheckpoint[c] = station;
+            } else if (const int anywhere = NearestStation(midX, midZ, -1); crosses(anywhere)) {
+                // The walk lost its place - a cannon, a gap wider than the search window - and
+                // the lap does cross this checkpoint after all.
+                station = anywhere;
+                mStationForCheckpoint[c] = station;
+            } else {
+                ++offLap;
+            }
+            forEachSuccessor(c, [&](std::size_t next) {
+                if (!reached[next]) {
+                    reached[next] = true;
+                    hintFor[next] = station;
+                    order.push_back(next);
+                }
+            });
+        }
     }
+    RT_LOGF(RT_TAG_A11Y, "course map: checkpoints bound %s, %d of %d off the lap\n",
+            linked ? "along the game's links" : "in index order", offLap,
+            static_cast<int>(total));
 
     // A checkpoint states its own left and right points, which is the only place in the data that
     // says which side is which. Settled by a vote across every checkpoint rather than trusting
@@ -404,6 +463,9 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
     int forVotes = 0;
     int againstVotes = 0;
     for (std::size_t c = 0; c < checkpoints.size(); ++c) {
+        if (mStationForCheckpoint[c] < 0) {
+            continue;  // off the lap, so no station's forward to judge it against
+        }
         const Checkpoint& cp = checkpoints[c];
         float fx, fz;
         Forward(mStationForCheckpoint[c], fx, fz);
@@ -418,12 +480,12 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
     mRightPerpSign = forVotes >= againstVotes ? 1.0f : -1.0f;
     // All three counters, because "+3 of 40" cannot distinguish a coin flip from mass abstention
     // - and a mirrored sign here mirrors every panned cue and every spoken corner on the course.
-    const int total = static_cast<int>(checkpoints.size());
+    const int onLap = static_cast<int>(total) - offLap;
     RT_LOGF(RT_TAG_A11Y,
             "course map: right-hand vote: %d for, %d against, %d abstained of %d -> sign %+.0f\n",
-            forVotes, againstVotes, total - forVotes - againstVotes, total,
+            forVotes, againstVotes, onLap - forVotes - againstVotes, onLap,
             static_cast<double>(mRightPerpSign));
-    if (forVotes == againstVotes || (forVotes + againstVotes) * 2 < total) {
+    if (forVotes == againstVotes || (forVotes + againstVotes) * 2 < onLap) {
         RT_LOGF(RT_TAG_A11Y, "course map: WARNING - the right-hand vote is weak on this course\n");
     }
 
@@ -435,11 +497,21 @@ void CourseMap::BuildCheckpointMap(const std::vector<Checkpoint>& checkpoints) {
     // is coarser - and an outlier is logged instead of obeyed.
     const int n = StationCount();
     int widest = 1;
-    for (std::size_t c = 0; c < checkpoints.size() && n > 0; ++c) {
+    for (std::size_t c = 0; c < total && n > 0; ++c) {
         const int from = mStationForCheckpoint[c];
-        const int to = mStationForCheckpoint[(c + 1) % checkpoints.size()];
-        const int gap = ((to - from) % n + n) % n;
-        widest = std::max(widest, gap);
+        if (from < 0) {
+            continue;
+        }
+        forEachSuccessor(c, [&](std::size_t next) {
+            const int to = mStationForCheckpoint[next];
+            if (to < 0) {
+                return;
+            }
+            // Either way round: the window is symmetric, and a checkpoint just past a branch
+            // point can bind a station or two behind its predecessor's.
+            const int forward = ((to - from) % n + n) % n;
+            widest = std::max(widest, std::min(forward, n - forward));
+        });
     }
     const int bound = std::max(2, n / 8);
     if (widest + 1 > bound) {
