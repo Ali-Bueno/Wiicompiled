@@ -14,6 +14,14 @@ namespace a11y::ui {
 // page it is. Answers are cached per class, so the scan happens once.
 bool ImplementsMethod(std::uint32_t object, std::uint32_t method);
 
+// Page::OnActivate's offset in every page vtable (StaticR: Options 0x808BA3EC, LicenseSelect
+// 0x808B984C).
+constexpr std::uint32_t kPageOnActivateSlot = 0x30;
+
+// The exact-slot test pages need: their vtables sit back to back in StaticR, so a scan from one
+// runs into its neighbour's slots (docs/options-entry.md, Traps).
+bool HasMethodAtSlot(std::uint32_t object, std::uint32_t slotOffset, std::uint32_t method);
+
 }  // namespace a11y::ui
 
 #endif  // MKW_ACCESSIBILITY_UI_CLASS_PROBE_H

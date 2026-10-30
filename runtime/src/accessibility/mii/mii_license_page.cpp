@@ -14,8 +14,8 @@
 namespace a11y::mii {
 namespace {
 
-// Pages::LicenseSelect, recognised by the OnActivate its vtable carries (MAP.txt), never by a
-// vtable address.
+// Pages::LicenseSelect, recognised by the OnActivate in its vtable's own slot (MAP.txt), never by
+// a vtable address.
 constexpr std::uint32_t kLicenseSelectOnActivate = 0x805EB774;
 
 // Pages::LicenseSelect::OnInit (0x805EABB8) paints each button in two calls: the page's MiiGroup
@@ -53,7 +53,8 @@ bool Registered(std::uint32_t address) {
 
 bool RepaintLicenseSelect() {
     const std::vector<std::uint32_t> layers = ui::ActiveLayerPages();
-    if (layers.empty() || !ui::ImplementsMethod(layers.back(), kLicenseSelectOnActivate)) {
+    if (layers.empty() || !ui::HasMethodAtSlot(layers.back(), ui::kPageOnActivateSlot,
+                                                kLicenseSelectOnActivate)) {
         return false;
     }
     std::uint32_t manager = 0;

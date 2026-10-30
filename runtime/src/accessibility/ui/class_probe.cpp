@@ -39,4 +39,11 @@ bool ImplementsMethod(std::uint32_t object, std::uint32_t method) {
     return found;
 }
 
+bool HasMethodAtSlot(std::uint32_t object, std::uint32_t slotOffset, std::uint32_t method) {
+    std::uint32_t vtable = 0;
+    std::uint32_t entry = 0;
+    return Memory::TryRead32(object, vtable) && vtable != 0 &&
+           Memory::TryRead32(vtable + slotOffset, entry) && entry == method;
+}
+
 }  // namespace a11y::ui
