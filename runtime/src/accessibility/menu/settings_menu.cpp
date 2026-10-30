@@ -58,7 +58,7 @@ void SettingsMenu::Open() {
     }
     BuildOptions();
     mOpen = true;
-    mFocus = 0;
+    mCursor.Reset(&mRows);
     Say(loc::Get("menu_opened"));
     // Queued, so the welcome line is heard before the first row.
     SpeakFocused(/*withName=*/true, /*interrupt=*/false);
@@ -114,21 +114,24 @@ void SettingsMenu::ApplyEditing(const MenuInput& input) {
 }
 
 void SettingsMenu::SpeakFocused(bool withName, bool interrupt) {
-    if (mOptions.empty()) {
+    const MenuRow* row = mCursor.Focused();
+    if (row == nullptr) {
         return;
     }
-    const Option& option = mOptions[static_cast<size_t>(mFocus)];
-    std::string text = withName ? loc::Get(option.nameKey) : std::string();
-    if (option.value) {
+    std::string text = withName ? loc::Get(row->nameKey) : std::string();
+    if (row->IsSubmenu() && withName) {
+        text += ", " + loc::Get("menu_submenu");
+    }
+    if (row->value) {
         if (!text.empty()) {
             text += ", ";
         }
-        text += option.value();
+        text += row->value();
     }
     // Description last, the way the game-menu narration reads an item and then its tooltip:
     // scrubbing the list interrupts it, dwelling on a row hears it in full.
     if (withName) {
-        const std::string helpKey = option.nameKey + kHelpKeySuffix;
+        const std::string helpKey = row->nameKey + kHelpKeySuffix;
         if (loc::Has(helpKey)) {
             if (!text.empty()) {
                 text += ". ";
@@ -143,9 +146,12 @@ void SettingsMenu::SpeakFocused(bool withName, bool interrupt) {
 
 void SettingsMenu::Apply(const MenuInput& input) {
     if (!mOpen) {
-        if (input.action == MenuAction::Toggle) {
+        if (input.action == MenuAction::Toggle || input.action == MenuAction::Open) {
             Open();
         }
+        return;
+    }
+    if (input.action == MenuAction::Open) {
         return;
     }
     if (IsEditingText()) {
@@ -153,39 +159,45 @@ void SettingsMenu::Apply(const MenuInput& input) {
         return;
     }
     const MenuAction action = input.action;
+    const MenuRow* row = mCursor.Focused();
+    if (row == nullptr) {
+        Close();
+        return;
+    }
     switch (action) {
         case MenuAction::Toggle:
-        case MenuAction::Back:
             Close();
             break;
+        case MenuAction::Back:
+            if (mCursor.Leave()) {
+                SpeakFocused(/*withName=*/true, /*interrupt=*/true);
+            } else {
+                Close();
+            }
+            break;
         case MenuAction::Up:
-        case MenuAction::Down: {
-            const int count = static_cast<int>(mOptions.size());
-            const int delta = action == MenuAction::Up ? -1 : 1;
-            mFocus = (mFocus + delta + count) % count;
+        case MenuAction::Down:
+            mCursor.Move(action == MenuAction::Up ? -1 : 1);
             SpeakFocused(/*withName=*/true, /*interrupt=*/true);
             break;
-        }
         case MenuAction::Left:
-        case MenuAction::Right: {
-            Option& option = mOptions[static_cast<size_t>(mFocus)];
-            if (option.adjust) {
-                option.adjust(action == MenuAction::Left ? -1 : 1);
+        case MenuAction::Right:
+            if (row->adjust) {
+                row->adjust(action == MenuAction::Left ? -1 : 1);
                 SpeakFocused(/*withName=*/false, /*interrupt=*/true);
             }
             break;
-        }
-        case MenuAction::Activate: {
-            Option& option = mOptions[static_cast<size_t>(mFocus)];
-            if (option.activate) {
-                option.activate();
+        case MenuAction::Activate:
+            if (mCursor.Enter()) {
+                SpeakFocused(/*withName=*/true, /*interrupt=*/true);
+            } else if (row->activate) {
+                row->activate();
                 // A row that started taking text has just spoken its instructions.
-                if (option.value && !IsEditingText()) {
+                if (row->value && !IsEditingText()) {
                     SpeakFocused(/*withName=*/false, /*interrupt=*/true);
                 }
             }
             break;
-        }
         default:
             break;  // Backspace and Text only exist while a row takes text
     }

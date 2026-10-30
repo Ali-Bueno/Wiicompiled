@@ -2,11 +2,11 @@
 #define MKW_ACCESSIBILITY_MENU_SETTINGS_MENU_H
 
 #include <atomic>
-#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "accessibility/menu/menu_tree.h"
 #include "accessibility/menu/name_entry.h"
 
 namespace a11y::menu {
@@ -15,12 +15,13 @@ namespace a11y::menu {
 // keyboard. Events arrive on the host event thread; the menu itself runs on the guest frame tick.
 enum class MenuAction {
     Toggle,     // open/close (L3+R3, F8)
+    Open,       // the mod's button on the game's Options page; never closes
     Up,
     Down,
     Left,
     Right,
-    Activate,   // A / Enter: toggles a switch, plays a demo, saves a typed name
-    Back,       // B / Escape: close, or cancel a typed name
+    Activate,   // A / Enter: opens a submenu, toggles a switch, plays a demo, saves a typed name
+    Back,       // B / Escape: up one submenu, close at the top, or cancel a typed name
     Backspace,  // while typing a name
     Text,       // while typing a name: one character, UTF-8
 };
@@ -49,15 +50,6 @@ public:
 private:
     SettingsMenu() = default;
 
-    // A row is a value (name + spoken value + adjust) or an action (name + activate), or both
-    // for switches, which toggle from Activate as well as from Left/Right.
-    struct Option {
-        std::string nameKey;
-        std::function<std::string()> value;
-        std::function<void(int)> adjust;    // -1 left, +1 right
-        std::function<void()> activate;
-    };
-
     void BuildOptions();
     void Apply(const MenuInput& input);
     void ApplyEditing(const MenuInput& input);
@@ -67,8 +59,9 @@ private:
     void BeginNameEdit();
     void EndNameEdit(bool save);
 
-    std::vector<Option> mOptions;
-    int mFocus = 0;
+    // Built once and never changed, so the cursor's pointers into it stay valid.
+    std::vector<MenuRow> mRows;
+    MenuCursor mCursor;
     std::atomic<bool> mOpen{false};
     bool mBuilt = false;
     std::atomic<bool> mEditing{false};

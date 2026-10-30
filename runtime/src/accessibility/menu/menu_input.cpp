@@ -9,7 +9,7 @@
 #include "aurora/event.h"
 
 // Host-side input for the settings menu: L3+R3 (or F8) toggles it, dpad/arrows drive it, A/Enter
-// activates, B/Escape closes. L3/R3 are safe to claim — no default mapping sends them to the
+// opens or activates, B/Escape goes back. L3/R3 are safe to claim — no default mapping sends them to the
 // game, and the guest pad contract never carries stick clicks at all. While the menu is open the
 // guest pad is blocked (PADBlockInput, from the menu itself), so none of this leaks into the game.
 
