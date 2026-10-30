@@ -1,6 +1,61 @@
 Changelog - Mario Kart Wii Accessibility
 
 
+Changes on 30/10/2026
+
+New:
+
+Accessibility button in the game's Options. The game's own Options screen, on Mario Kart Wii and on Retro Rewind, has a new last button, "Accessibility", that opens the settings menu. L3+R3 and F8 still open it from any menu.
+
+The settings menu is in submenus: online name first, then steering guide, sound cues, sound, graphics and controls. A enters a submenu, B goes back, and B at the top closes the menu. A submenu says "submenu" after its name.
+
+The F10 bar's settings in the spoken menu. Sound: sound effects, menu sounds and voices volumes, mute the game, mute music while other media plays and mixing audio on a worker thread, beside the volumes that were already there. Graphics: resolution, bloom, display mode, race frame interpolation, copy filter and skipping draws while shaders compile. Controls: the controller on each port, assigning or unassigning one, the GameCube, Classic Controller Pro and PlayStation button layouts, vibration, keyboard and mouse with the WASD layout, a Wii Remotes submenu (use, keep scanning, rescan, calibrate, clear the calibration) and importing controls from Dolphin. Remapping button by button, axis thresholds, the mute shortcut and the FPS counter stay in the F10 bar only.
+
+Fixed:
+
+Branching courses. The course map followed the checkpoints in index order, which is not the lap where the road splits, so on courses like Mushroom Gorge some checkpoints were bound to the wrong stretch and the guide got tangled at those corners. It now follows the game's own checkpoint links.
+
+Changing the online name while the licence settings, licence erase or change Mii screen was open could repaint that screen as if it were the licence list. Only the licence list is repainted now.
+
+The trick ramp rows of the settings menu were spoken in English in every language.
+
+
+Changes on 21/10/2026
+
+New:
+
+Ledges. A step down onto road beside you (not a fall) is treated like a wall: the racing line keeps clear of it, the edge beeps are unchanged, and "ledge on the left" or "ledge on the right" is said once per stretch. When you drop onto the road below a ledge, the guide and the edge cues follow that lower road until it ends.
+
+Changed:
+
+The trick ramp blip is a little quieter, and it is never in one ear alone.
+
+Fixed:
+
+My kart volume applies from the first moment of each new kart sound; a hop used to start at full volume for one frame.
+
+Retrying the same course starts the race's narration and cues clean. The online name editor accepts the space bar.
+
+
+Changes on 23/09/2026
+
+New:
+
+Drift and brake in the corner calls. Your engine class changes your speed but not how fast the kart turns, so a corner that holds on the stick at 150cc needs a drift at 200cc and brakes at 500cc. When your kart's speed asks for more than the corner's word already says, "drift" or "brake" is added to the call.
+
+Changed:
+
+Every trick ramp is heard. The ramp blip now finds ramps, jump pads and bouncy mushrooms in the whole course, also those beside the racing line and short ones it used to miss, and it is centred when you are lined up with the ramp, also in a bend. The item box blip got the same centring fix.
+
+Corner words match the stick. The grades are now based on how fast the kart really turns, measured in play, so a "normal" corner takes the stick it is called at. The same corners are called as before. A hairpin names a tight 120-degree shape and no longer implies braking; "brake" says it when it is needed.
+
+Walls and rails standing on the road are seen by the edge cues and by the racing line, which used to see only the edge of the floor.
+
+Courses with a very narrow route in the game data, like N64 Luigi Raceway, no longer spend the first lap without edge cues.
+
+From WiiCompiled 0.2.32: keyboard and mouse support with reworked button remapping, an Exit button, the controller light fix, the mute shortcut fix, a crash fix for Kamek patches such as Retro Rewind's Item Rain, and a fix for flickering overlapping surfaces.
+
+
 Changes on 16/09/2026
 
 Changed:

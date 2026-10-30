@@ -35,13 +35,19 @@ what you might expect.
   on the line. There is no extra tone for this. A bend is heard as a steady lean, not as something
   to chase.
 - Corners are called out ahead of time: "left", "hard right", "hairpin left long", and two corners
-  in a row come as "right then left". Before each corner three beeps count down into it, rising in
-  pitch, then a beep at the entry, one at the apex and a higher one at the exit.
+  in a row come as "right then left". When the corner takes more than the stick at the speed of
+  your engine class, "drift" or "brake" is added. Before each corner three beeps count down into
+  it, rising in pitch, then a beep at the entry, one at the apex and a higher one at the exit.
 - Near the edge of the road you hear beeps that get quicker the closer you are, on the side of the
   danger. Off the road they turn into a held tone until you're back on. "Off road", "on road" and
   "wrong way" are spoken as well, and those stay on even if you turn the edge tones off.
 - While your hands are empty a short blip points at the nearest item box you can still take. It
   drops in pitch once the box is behind you. It goes quiet as soon as you're holding something.
+- A short rising blip points at the next ramp, jump pad or bouncy mushroom you can trick off. It
+  gets louder as you get closer and goes quiet while you're on it.
+- A step down onto road beside you is said once per stretch: "ledge on the left". The racing line
+  keeps clear of it like a wall, and when you drop onto the road below, the guide follows that
+  road.
 - When the item roulette stops, the item is named: "red shell", "triple mushrooms", "bullet
   bill" and so on. Using it or losing it isn't announced, the game's own sounds cover that.
 - Laps and positions are spoken when they change ("lap 2 of 3", "4th"), and "finished 2nd" at the
@@ -108,35 +114,37 @@ that it just stays quiet. `check_updates` in `Config.toml` turns it off.
 
 ## The settings menu
 
-From any game menu (not during a race), click both sticks at once (L3+R3) or press F8 on the
-keyboard. The menu is spoken. Up and down move between rows, left and right change a value in
-steps of 5, A activates, B closes. Every row reads its name, its value and a short explanation of
-what it does.
+The last button of the game's own Options screen, "Accessibility", opens it, on Mario Kart Wii
+and on Retro Rewind. From any other game menu (not during a race) click both sticks at once
+(L3+R3) or press F8 on the keyboard. The menu is spoken. Up and down move between rows, left and
+right change a value (volumes and knobs in steps of 5), A activates a row or enters a submenu,
+B goes back, and B at the top closes the menu. Every row reads its name, its value and a short
+explanation of what it does; a submenu says "submenu" after its name.
 
-Rows, in order:
+The menu, in order:
 
-1. online name
-2. master volume
-3. music volume
-4. my kart volume (0 to 200)
-5. rival karts volume
-6. item roulette volume
-7. edge cue volume
-8. surface cue volume
-9. curve cue volume
-10. countdown cue volume
-11. item box cue volume
-12. invert steering pan
-13. steering guide strength
-14. anticipation
-15. steering lean angle
-16. edge cues (on/off)
-17. hear the edge tone
-18. hear a curve beep
-19. hear the item box
+- **online name**
+- **steering guide**: invert steering pan, steering guide strength, anticipation, steering lean
+  angle
+- **sound cues**: edge cues (on/off), one volume per cue (edge, surface, curve, countdown, item
+  box, trick ramp), then hear the edge tone, hear a curve beep, hear the item box, hear the trick
+  ramp
+- **sound**: master, music, sound effects, menu sounds and voices volumes, mute the game, my kart
+  volume (0 to 200), rival karts volume, item roulette volume, mute music while other media plays,
+  mix audio on a worker thread
+- **graphics**: resolution, disable bloom, display mode, race frame interpolation, disable copy
+  filter, skip draws while shaders compile
+- **controls**: controller port, assign connected controller, unassign controller, GameCube,
+  Classic Controller Pro and PlayStation layouts, controller vibration, keyboard and mouse, WASD
+  and mouse layout, **Wii Remotes** (use Wii Remotes, keep scanning, rescan now, calibrate the
+  accelerometer, clear the calibration), import controls from Dolphin
 
-The last three just play the sound so you know what to listen for. The five cue volume rows
-replay their cue at the new level on every step, so you tune them by ear.
+The "hear" rows just play the sound so you know what to listen for. The cue volume rows replay
+their cue at the new level on every step, so you tune them by ear.
+
+The sound, graphics and controls rows are the same settings as the port's F10 bar. Remapping
+button by button, axis thresholds, the mute shortcut and the FPS counter are only in the F10 bar.
+After a change made here the F10 bar may show the old value until the game restarts.
 
 "Online name" is the name other players see and the name of your Mii, up to 10 characters.
 Press A on the row, type the name on the keyboard (each letter is read back, Backspace deletes
@@ -147,7 +155,7 @@ About "invert steering pan": by default the engine sounds on the side you must s
 from. Some people would rather drive toward the sound, like following a guide. Turning this on
 flips it, and that's all it does.
 
-The three rows after it are the steering guide's own calibration. The defaults are the ones the
+The other three steering guide rows are its calibration. The defaults are the ones the
 guide was play-tested with, so leave them alone unless you know what you want. "Steering guide
 strength" is how far the engine pans at most. "Anticipation" is how far ahead the mod looks: a
 tenth of a second at 0, the play-tested eight tenths at 100, about a second and a half at 200; it
